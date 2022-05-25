@@ -26,12 +26,20 @@ def parse_args():
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
     common_arg.add_argument('--glimpse_hidden', type=int, default=128, help='hidden size of glimpse fc')
-    common_arg.add_argument('--patch_size', type=int, default=32, help='size of extracted patch at highest res')
     common_arg.add_argument('--img_size', type=int, default=32, help='size of extracted patch at highest res')
-    common_arg.add_argument('--nglimpses', type=int, default=1, help='# of downscaled patches per glimpse')
-    common_arg.add_argument('--glimpse_scale', type=int, default=2, help='scale of successive patches')
     common_arg.add_argument('--narguments', type=int, default=6, help='# of glimpses, i.e. BPTT iterations')
-    common_arg.add_argument('--model', type=str, default='vanilla', help='Convolutional model to use. One of {"vanilla", "resnetX", "densenetX"}.')
+
+
+    # codebook params
+    vq_network_arg = parser.add_argument_group('vector quantizer Params')
+    vq_network_arg.add_argument('--nconcepts', type=int, default=512, help='total number of discrete symbols in a codebook')
+    vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
+    vq_network_arg.add_argument('--beta', type=float default=0.9, help='component of quantization loss')
+    vq_network_arg.add_argument('--disentangle', type=bool, default=True, help='enforces disentanglement with addditional regularizations')
+    vq_network_arg.add_argument('--remap', default=None, help='for remapping idx ot desired dimension')
+    vq_network_arg.add_argument('--unknown_index', type=str, default="random", help='remap parameter')
+    vq_network_arg.add_argument('--legacy', type=bool, default=True, help='use previously predicted info')
+
 
     # core_network params
     core_network_arg = parser.add_argument_group('core_network Params')
@@ -85,16 +93,9 @@ def parse_args():
     misc_arg.add_argument('--plot_num_imgs', type=int, default=4, help='How many imgs to plot glimpses animiation')
     
 
-    # glimpse network parameters
-    glimpse_arg = parser.add_argument_group('GlimpseNet Params')
-    glimpse_arg.add_argument('--conv', type=str2bool, default=False, help='Use convolutional model')
-    glimpse_arg.add_argument('--loc_hidden', type=int, default=128, help='hidden size of loc fc')
-
-
     # debate parameters
     debate_arg = parser.add_argument_group('Debate Params')
     debate_arg.add_argument('--nagents', type=int, default=2, help='# of agents in debate')
-    debate_arg.add_argument('--fully_observable', type=bool, default=True, help='share locations across agents')
     debate_arg.add_argument('--contrastive', type=bool, default=False, help='fine tune supporter models')
     debate_arg.add_argument('--reward_weightage', type=float, default=1, help='weightage for reward')
     debate_arg.add_argument('--rl_weightage', type=float, default=0.5, help='weightage for rl loss terms')
@@ -141,16 +142,12 @@ if __name__ == '__main__':
                     ]
     testtransformSequence=transforms.Compose(testtransformList)
 
-    # make loc std dependent on img_size and patch_size
-    args.std = args.std*args.patch_size*(args.glimpse_scale**args.nglimpses)*0.5/args.img_size
-    
     if args.use_gpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = "{}".format(args.device)
         torch.cuda.manual_seed(args.random_seed)
         kwargs = {'num_workers': 4, 'pin_memory': True}
 
-    if args.is_train:
-        
+    if args.is_train:        
         train_dataset = DataGenerator(os.path.join(args.data_dir,'training'), 
                                                     traintransformSequence,
                                                     include_classes=args.include_classes)
@@ -181,7 +178,7 @@ if __name__ == '__main__':
     manipulator_prob = 0.6
 
 
-    def get_reward(logits, y, attacker=False):
+    def get_reward(z, wvecs, logits, y, attacker=False):
         pred = torch.max(logits, dim=1)[0]
         rand_prob = np.random.uniform(0,1)
 

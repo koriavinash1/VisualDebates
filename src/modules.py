@@ -61,11 +61,11 @@ class VectorQuantizer2DHS(nn.Module):
 
         remap = args.remap
         unknown_index = args.unknown_index
-        self.n_e = args.n_e
-        self.e_dim = args.e_dim
+        self.n_e = args.nconcepts
+        self.e_dim = args.cdim
         self.beta = args.beta
         self.legacy = args.legacy
-        self.device = args.device
+        self.use_gpu = args.use_gpu
         self.disentangle = args.disentangle
 
         self.epsilon = 1e-4
@@ -82,7 +82,9 @@ class VectorQuantizer2DHS(nn.Module):
 
 
         self.hsreg = lambda x: [ torch.norm(x[i]) for i in range(x.shape[0])]
-        self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.device)
+        self.r = torch.nn.Parameter(torch.ones(self.n_e))
+        if self.use_gpu:
+            self.r = self.r.cuda()
         self.ed = lambda x: [torch.norm(x[i]) for i in range(x.shape[0])]
         
 
@@ -113,7 +115,11 @@ class VectorQuantizer2DHS(nn.Module):
         new = match.argmax(-1)
         unknown = match.sum(2)<1
         if self.unknown_index == "random":
-            new[unknown]=torch.randint(0,self.re_embed,size=new[unknown].shape).to(device=new.device)
+            r = torch.randint(0,self.re_embed,size=new[unknown].shape)
+            if self.use_gpu:
+                r = r.cuda()
+
+            new[unknown] = r
         else:
             new[unknown] = self.unknown_index
         return new.reshape(ishape)
@@ -151,7 +157,8 @@ class VectorQuantizer2DHS(nn.Module):
         ed2 = ed1.transpose(0,1)
         ed3 = ed1 * ed2
 
-        edx = d1/ed3.to(self.device)
+        edx = d1/ed3
+        if self.use_gpu: edx = edx.cuda()
         edx = torch.clamp(edx, min=-0.99999, max=0.99999)
         d1 = torch.acos(edx)
         
@@ -170,7 +177,9 @@ class VectorQuantizer2DHS(nn.Module):
 
         z_q = self.embedding(min_encoding_indices).view(z.shape)
 
-        hsw = torch.Tensor(self.hsreg(self.embedding.weight)).to(self.device)
+        hsw = torch.Tensor(self.hsreg(self.embedding.weight))
+        if self.use_gpu:
+            hsw = hsw.cuda()
         hsw = torch.mean(torch.square(self.r - hsw))
 
         # compute loss for embedding
@@ -220,6 +229,7 @@ class RevLSTMCell(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.hidden_size = hidden_size
         self.init_weights()
+
         
     def forward(self, x, state):
         c, h = state
