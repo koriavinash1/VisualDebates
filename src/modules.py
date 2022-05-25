@@ -376,10 +376,11 @@ class PolicyNet(nn.Module):
         @param std: standard deviation of the normal distribution.
         """
         super(PolicyNet, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.fc2 = nn.Linear(input_size, hidden_size)
+        self.fc1 = nn.Linear(input_size, input_size//2)
+        self.fc2 = nn.Linear(input_size, input_size//2)
+        self.fc3 = nn.Linear (hidden_size, input_size//2)
 
-        self.combine = nn.Linear(2*hidden_size, output_size)
+        self.combine = nn.Linear(3*input_size//2, output_size)
 
         if use_gpu:
             self.cuda()
@@ -389,8 +390,9 @@ class PolicyNet(nn.Module):
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
         z1 = F.relu(self.fc1(z*w0))
         z2 = F.relu(self.fc2(z*w1))
+        z3 = F.tanh(self.fc3(h_t))
 
-        logits = self.combine(torch.cat((z1, z2), dim=1))
+        logits = self.combine(torch.cat((z1, z2, z3), dim=1))
         return F.softmax(logits)
 
 
@@ -408,10 +410,7 @@ class ModulatorNet(nn.Module):
 
     def forward(self, z, w):
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-
-        # attention
-        z = z*w
-
+        z = z*w # attention
         return self.fc(z)
 
 
@@ -449,18 +448,19 @@ class PlayerNet(nn.Module):
         Initialize the recurrent attention model and its different components.
         """
         super(PlayerNet, self).__init__()
-        rnn_inp_size = args.glimpse_hidden + args.loc_hidden
         self.narguments = args.narguments
-        self.std = args.std
 
-        self.rnn = core_network(rnn_inp_size, args.rnn_hidden, args.use_gpu)
-        self.modulator_net = ModulatorNet(args.rnn_hidden, 2, 
-                                        args.std, 
+        self.rnn = core_network(args.rnn_input_size, 
+                                    args.rnn_hidden, 
+                                    args.use_gpu)
+        self.modulator_net = ModulatorNet(args.n_symbols,
+                                        args.rnn_input_size,
+                                        args.use_gpu)
+        self.policy_net = PolicyNet(args.n_symbols,
+                                        args.n_symbols,
+                                        args.rnn_hidden, 
                                         args.use_gpu)
 
-        self.policy_net = PolicyNet(args.rnn_hidden, 2, 
-                                        args.std, 
-                                        args.use_gpu)
 
         self.classifier = ActionNet(args.rnn_hidden, args.num_class)
         self.baseline_net = BaselineNet(args.rnn_hidden, 1)
@@ -470,26 +470,23 @@ class PlayerNet(nn.Module):
             self.cuda()
 
 
-    def step(self, x, lt_agent, lt_other, h_t):
+    def step(self, z, w0, w1, h_t):
         """
         @param x: image. (batch, channel, height, width)
-        @param l_t: location trial. (batch, 2)
-        @param h_t: last hidden state. (batch, rnn_hidden)
-        @return h_t: next hidden state. (batch, rnn_hidden)
-        @return l_t: next location trial. (batch, 2)
-        @return b_t: baseline for step t. (batch)
-        @return log_pi: probability for next location trial. (batch)
+        @param l_t:
         """
-        glimpse = self.glimpse_net(x, lt_agent, lt_other)
-        h_t = self.rnn(glimpse, h_t)
-        mu, l_t = self.location_net(h_t[0])
+        w_current = self.policy_net(z, w0, w1, h_t)
+        z_current = self.modulator_net(z, w_current)
+        h_t = self.rnn(z_current, h_t)
+
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        log_pi = torch.log(l_t)
+        log_pi = torch.log(w_current)
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
         log_pi = log_pi.sum(dim=1)
 
-        return h_t, l_t, b_t, log_pi
+        return h_t, w_current, b_t, log_pi
+
 
     def forward(self, x, l_t):
         """
@@ -504,16 +501,16 @@ class PlayerNet(nn.Module):
         batch_size = x.shape[0]
         h_t = self.rnn.init_hidden(batch_size)
 
-        locs = []
+        wvecs = []
         baselines = []
         log_pi = []
         for t in range(self.narguments):
-            h_t, l_t, b_t, p_t = self.step(x, l_t, h_t)
-            locs.append(l_t)
+            h_t, w_t, b_t, p_t = self.step(x, l_t, h_t)
+            wvecs.append(w_t)
             baselines.append(b_t)
             log_pi.append(p_t)
 
         log_probas = self.classifier(h_t[0])
         baselines = torch.stack(baselines).transpose(1, 0)
         log_pi = torch.stack(log_pi).transpose(1, 0)
-        return locs, baselines, log_pi #, log_probas
+        return wvecs, baselines, log_pi, log_probas

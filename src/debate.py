@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os, json
 import torchnet as tnt
 from src.clsmodel import afhq, mnist, stl10
-from src.modules import ActionNet
+from src.modules import VectorQuantizer2DHS
 
 class Debate(nn.Module):
     def __init__(self, args):
@@ -22,6 +22,7 @@ class Debate(nn.Module):
         self.nagents = args.nagents
         self.M = args.M
         self.narguments = args.narguments
+        self.discretizer = VectorQuantizer2DHS(args)
         self.agents = [RecurrentAttentionAgent(args, i) \
                             for i in range(self.nagents)]
 
