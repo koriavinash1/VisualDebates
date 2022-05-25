@@ -176,11 +176,33 @@ if __name__ == '__main__':
     # build Debate model
     model = Debate(args)
     manipulator_prob = 0.6
-
+    EPS = 1e-3
 
     def get_reward(z, wvecs, logits, y, attacker=False):
         pred = torch.max(logits, dim=1)[0]
         rand_prob = np.random.uniform(0,1)
+
+        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).flatten()
+
+        @torch.no_grad()
+        def get_AS(z, wvec):
+            orig_score = model.quantized_classifier(z)
+            z = z*wvec
+            perturbed_score = model.quantized_classifier(z)
+            delta =  orig_score - perturbed_score
+
+            if attacker:
+                if delta > EPS: return 1
+                elif delta < -EPS: return -1
+                else: return 0
+            else:
+                if delta > EPS: return -1
+                elif delta < -EPS: return 1
+                else: return 0
+
+        AS_scores = [get_AS(z, w) for w in wvecs]
+        cummilative_AS = np.sum(AS_scores)
+
 
         if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
             reward = (pred == y).float()
@@ -188,17 +210,12 @@ if __name__ == '__main__':
             reward = -(pred == y).float()
 
 
-        return args.reward_weightage*reward 
+        return args.reward_weightage*reward + cummilative_AS
 
     
     reward_fns = [lambda p, y: get_reward(p, y),
                     lambda p, y: get_reward(p, y, True),]
     model.reward_fns = reward_fns
-
-
-    # classifier_fns = [lambda p, jpred, y: F.nll_loss(p[-1], y),
-    #                     lambda p, jpred, y: F.nll_loss(p[-1], y)]
-    # model.classifier_fns = classifier_fns
 
 
     if args.use_gpu: model.cuda()
