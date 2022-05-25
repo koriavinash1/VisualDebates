@@ -34,56 +34,55 @@ class weightConstraint2(object):
             module.weight.data=w
 
 
-class GumbelQuantize2DHS(nn.Module):
+class VectorQuantizer2DHS(nn.Module):
     """
-    credit to @karpathy: https://github.com/karpathy/deep-vector-quantization/blob/main/model.py (thanks!)
-    Gumbel Softmax trick quantizer
-    Categorical Reparameterization with Gumbel-Softmax, Jang et al. 2016
-    https://arxiv.org/abs/1611.01144
+    Improved version over VectorQuantizer, can be used as a drop-in replacement. Mostly
+    avoids costly matrix multiplications and allows for post-hoc remapping of indices.
     """
-    def __init__(self, device,  
-                    n_e = 128, 
-                    e_dim = 16, 
-                    beta = 0.9, 
-                    ignorezq = False,
-                    disentangle = True,
-                    remap=None, 
-                    unknown_index="random",
-                    sane_index_shape=False, 
-                    legacy=True, 
-                    sigma = 0.1,
-                    straight_through=True,
-                    kl_weight=5e-4, 
-                    temp_init=1.0):
+    # NOTE: due to a bug the beta term was applied to the wrong term. for
+    # backwards compatibility we use the buggy version by default, but you can
+    # specify legacy=False to fix it.
+    def __init__(self, args):
         super().__init__()
+        '''
+        n_e : total number of codebook vectors
+        e_dim: codebook vector dimension
+        beta: factor for legacy term
+        '''
 
+        # device,  
+        # n_e = 128, 
+        # e_dim = 16, 
+        # beta = 0.9, 
+        # disentangle = True,
+        # remap=None, 
+        # unknown_index="random",
+        # legacy=True, 
 
-        self.n_e = n_e
-        self.e_dim = e_dim
-        self.beta = beta
-        self.legacy = legacy
-        self.sigma = sigma
-        self.device = device
-        self.ignorezq = ignorezq
-        self.disentangle = disentangle
+        remap = args.remap
+        unknown_index = args.unknown_index
+        self.n_e = args.n_e
+        self.e_dim = args.e_dim
+        self.beta = args.beta
+        self.legacy = args.legacy
+        self.device = args.device
+        self.disentangle = args.disentangle
 
-        self.temperature = temp_init
-        self.kl_weight = kl_weight
-        self.straight_through = straight_through
-
-        self.proj = nn.Linear(self.e_dim, self.n_e, 1)
-        self.embedding = nn.Embedding(self.n_e, self.e_dim)
+        self.epsilon = 1e-4
+        self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
+        self.min_norm = 1e-15
+        # uniformly sampled initialization
         sphere = Hypersphere(dim=self.e_dim - 1)
+        self.embedding = nn.Embedding(self.n_e, 
+                                        self.e_dim)
 
 
         points_in_manifold = torch.Tensor(sphere.random_uniform(n_samples=self.n_e))
         self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
 
-        #self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
-
 
         self.hsreg = lambda x: [ torch.norm(x[i]) for i in range(x.shape[0])]
-        self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(device)
+        self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.device)
         self.ed = lambda x: [torch.norm(x[i]) for i in range(x.shape[0])]
         
 
@@ -100,9 +99,8 @@ class GumbelQuantize2DHS(nn.Module):
             print(f"Remapping {self.n_e} indices to {self.re_embed} indices. "
                   f"Using {self.unknown_index} for unknown indices.")
         else:
-            self.re_embed = n_e
+            self.re_embed = self.n_e
 
-        self.sane_index_shape = sane_index_shape
         self.clamp_class = Clamp()
 
 
@@ -111,15 +109,19 @@ class GumbelQuantize2DHS(nn.Module):
         assert len(ishape)>1
         inds = inds.reshape(ishape[0],-1)
         used = self.used.to(inds)
-        match = (inds[:,:,None]==used[None,None,...]).long()
+        match = (inds[:,:,None]==used[None, None,...]).long()
         new = match.argmax(-1)
         unknown = match.sum(2)<1
         if self.unknown_index == "random":
-            new[unknown] = torch.randint(0,
-                            self.re_embed,size=new[unknown].shape).to(device=new.device)
+            new[unknown]=torch.randint(0,self.re_embed,size=new[unknown].shape).to(device=new.device)
         else:
             new[unknown] = self.unknown_index
         return new.reshape(ishape)
+
+    def HLoss(self, x):
+        b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
+        b = -1.0 * b.sum()
+        return b
 
     def unmap_to_all(self, inds):
         ishape = inds.shape
@@ -132,34 +134,25 @@ class GumbelQuantize2DHS(nn.Module):
         return back.reshape(ishape)
 
     def forward(self, z,
-                    prev_cb = None,
-                    attention_w = None, 
                     temp=None, 
                     rescale_logits=False, 
                     return_logits=False):
-        # force hard = True when we are in eval mode, as we must quantize. 
-        # actually, always true seems to work
-
+        
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
         assert return_logits==False, "Only for interface compatible with Gumbel"
-        
-
         z_flattened = z.view(-1, self.e_dim)
-        cb = self.embedding.weight
 
 
         # intra distance (gdes-distance) between codebook vector 
-        d1 = torch.einsum('bd,dn->bn', 
-                            cb, 
-                            rearrange(cb, 'n d -> d n'))
-        ed1 = torch.tensor(self.ed(cb))
+        d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
+        ed1 = torch.tensor(self.ed(self.embedding.weight))
         ed1 = ed1.repeat(self.n_e, 1)
         ed2 = ed1.transpose(0,1)
         ed3 = ed1 * ed2
+
         edx = d1/ed3.to(self.device)
         edx = torch.clamp(edx, min=-0.99999, max=0.99999)
-        # d = torch.acos(d)
         d1 = torch.acos(edx)
         
 
@@ -167,76 +160,49 @@ class GumbelQuantize2DHS(nn.Module):
         total_min_distance = torch.mean(min_distance[0])
         codebookvariance = torch.mean(torch.var(d1, 1))
 
-        # get quantized vector and normalize
-        hsw = torch.Tensor(self.hsreg(cb)).to(self.device)
-        hsw = torch.mean(torch.square(self.r - hsw.clone().detach()))
-        self.r = self.clamp_class.apply(self.r)
+        # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+        d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
+            torch.sum(self.embedding.weight**2, dim=1) - 2 * \
+            torch.einsum('bd,dn->bn', z_flattened, rearrange(self.embedding.weight, 'n d -> d n'))
+        
+        min_encoding_indices = torch.argmin(d, dim=1)
+    
+
+        z_q = self.embedding(min_encoding_indices).view(z.shape)
+
+        hsw = torch.Tensor(self.hsreg(self.embedding.weight)).to(self.device)
+        hsw = torch.mean(torch.square(self.r - hsw))
+
+        # compute loss for embedding
+        if not self.legacy:
+            loss = self.beta * torch.mean((z_q.detach() - z) ** 2) 
+            loss += torch.mean((z_q - z.detach()) ** 2) 
+        else:
+            loss = torch.mean((z_q.detach() - z) ** 2)  
+            loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
+
+
         disentanglement_loss = codebookvariance - total_min_distance
-
-
-        hard = self.straight_through if self.training else True
-        temp = self.temperature if temp is None else temp
-
-        logits = self.proj(z_flattened)
-
-
-        if self.remap is not None:
-            # continue only with used logits
-            full_zeros = torch.zeros_like(logits)
-            logits = logits[:,self.used,...]
-
-        soft_one_hot = F.gumbel_softmax(logits, tau=temp, dim=1, hard=hard)
-        if self.remap is not None:
-            # go back to all entries but unused set to zero
-            full_zeros[:,self.used,...] = soft_one_hot
-            soft_one_hot = full_zeros
-
-        z_q = torch.einsum('b n, n d -> b d', soft_one_hot, cb)
-
-        cb_loss = 0
-        if not (prev_cb is None):
-            cb_attn = torch.einsum('md,mn->nd', prev_cb, attention_w)
-            z_q2 = torch.einsum('b n, n d -> b d', soft_one_hot, cb_attn)
-            cb_loss = F.mse_loss(z_q, z_q2)
-
-
-        z_q = z_q.view(z.shape)
-        # + kl divergence to the prior loss
-        qy = F.softmax(logits, dim=1)
-        kl_loss = self.kl_weight * torch.sum(qy * torch.log(qy * self.n_e + 1e-10), dim=1).mean()
-
-        ind = soft_one_hot.argmax(dim=1)
-        if self.remap is not None:
-            ind = self.remap_to_used(ind)
-
-
-        loss = kl_loss + cb_loss
-
         if self.disentangle:
-           loss += hsw + disentanglement_loss
+            loss += hsw
+            loss += disentanglement_loss
+
+
+        # preserve gradients
+        z_q = z + (z_q - z).detach()
+
 
         sampled_idx = torch.zeros(z.shape[0]*self.n_e).to(z.device)
-        sampled_idx[ind] = 1
+        sampled_idx[min_encoding_indices] = 1
         sampled_idx = sampled_idx.view(z.shape[0], self.n_e)
+
+
         return (z_q, loss,
-                    (sampled_idx, ind), 
+                    (sampled_idx, min_encoding_indices.view(z.shape[0], -1)), 
                     codebookvariance, 
                     total_min_distance,  
                     hsw, 
-                    cb_loss,
                     torch.mean(self.r))
-
-
-    def get_codebook_entry(self, indices, shape):
-        b, h, w, c = shape
-        assert b*h*w == indices.shape[0]
-        indices = rearrange(indices, '(b h w) -> b h w', b=b, h=h, w=w)
-        if self.remap is not None:
-            indices = self.unmap_to_all(indices)
-        one_hot = F.one_hot(indices, num_classes=self.n_e).permute(0, 3, 1, 2).float()
-        z_q = torch.einsum('b n h w, n d -> b d h w', one_hot, self.embedding.weight)
-        return z_q
-
 
 
 
@@ -403,102 +369,50 @@ class ActionNet(nn.Module):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, input_size, output_size, std, use_gpu):
+    def __init__(self, input_size, output_size, hidden_size, use_gpu):
         """
         @param input_size: input size of the fc layer.
         @param output_size: output size of the fc layer.
         @param std: standard deviation of the normal distribution.
         """
         super(PolicyNet, self).__init__()
-        self.std = std
-        self.fc = nn.Linear(input_size, output_size)
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(input_size, hidden_size)
+
+        self.combine = nn.Linear(2*hidden_size, output_size)
+
         if use_gpu:
             self.cuda()
 
-    def forward(self, h_t):
-        """
-        Generate next location `l_t` by calculating the coordinates
-        conditioned on an affine and adding a normal noise followed
-        by a tanh to clamp the output beween [-1, 1].
-        @param h_t: hidden state. (batch, rnn_hidden)
-        @return mu: noise free location. Used for calculating
-                    reinforce loss. (B, 2).
-        @return l_t: Next location. (B, 2).
-        """
-        # compute noise-free location
-        mu = F.tanh(self.fc(h_t))
+    def forward(self, z, w0, w1, h_t):
 
-        # sample from gaussian parametrized by this mean
-        # This is the origin repo implementation
-        noise = torch.from_numpy(np.random.normal(
-            scale=self.std, size=mu.shape)
-        )
-        noise = Variable(noise.float()).type_as(mu)
+        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
+        z1 = F.relu(self.fc1(z*w0))
+        z2 = F.relu(self.fc2(z*w1))
 
-        # This is an equivalent implementation
-        # noise = torch.zeros_like(mu)
-        # noise.data.normal_(std=self.std)
-
-        # add noise to the location and bound between [-1, 1]
-        l_t = noise + mu
-        l_t = F.tanh(l_t)
-
-        # prevent gradient flow
-        # Note that l_t is not used to calculate gradients later.
-        # Hence detach it explicitly here.
-        l_t = l_t.detach()
-
-        return mu, l_t
+        logits = self.combine(torch.cat((z1, z2), dim=1))
+        return F.softmax(logits)
 
 
 
 class ModulatorNet(nn.Module):
-    def __init__(self, input_size, output_size, std, use_gpu):
+    def __init__(self, input_size, output_size, use_gpu):
         """
-        @param input_size: input size of the fc layer.
-        @param output_size: output size of the fc layer.
-        @param std: standard deviation of the normal distribution.
+        @param input_size: input size of the fc layer, total number of sampled symbols.
+        @param output_size: output size of the fc layer, hidden vector dimension.
         """
         super(ModulatorNet, self).__init__()
-        self.std = std
         self.fc = nn.Linear(input_size, output_size)
         if use_gpu:
             self.cuda()
 
-    def forward(self, h_t):
-        """
-        Generate next location `l_t` by calculating the coordinates
-        conditioned on an affine and adding a normal noise followed
-        by a tanh to clamp the output beween [-1, 1].
-        @param h_t: hidden state. (batch, rnn_hidden)
-        @return mu: noise free location. Used for calculating
-                    reinforce loss. (B, 2).
-        @return l_t: Next location. (B, 2).
-        """
-        # compute noise-free location
-        mu = F.tanh(self.fc(h_t))
+    def forward(self, z, w):
+        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
 
-        # sample from gaussian parametrized by this mean
-        # This is the origin repo implementation
-        noise = torch.from_numpy(np.random.normal(
-            scale=self.std, size=mu.shape)
-        )
-        noise = Variable(noise.float()).type_as(mu)
+        # attention
+        z = z*w
 
-        # This is an equivalent implementation
-        # noise = torch.zeros_like(mu)
-        # noise.data.normal_(std=self.std)
-
-        # add noise to the location and bound between [-1, 1]
-        l_t = noise + mu
-        l_t = F.tanh(l_t)
-
-        # prevent gradient flow
-        # Note that l_t is not used to calculate gradients later.
-        # Hence detach it explicitly here.
-        l_t = l_t.detach()
-
-        return mu, l_t
+        return self.fc(z)
 
 
 class BaselineNet(nn.Module):
@@ -571,7 +485,7 @@ class PlayerNet(nn.Module):
         mu, l_t = self.location_net(h_t[0])
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        log_pi = Normal(mu, self.std).log_prob(l_t)
+        log_pi = torch.log(l_t)
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
         log_pi = log_pi.sum(dim=1)
 
