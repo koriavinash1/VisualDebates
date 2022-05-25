@@ -133,6 +133,27 @@ class Debate(nn.Module):
         agent_data = torch.cat(agents_data, dim=0)
         return torch.transpose(agent_data, 0, 1)
 
+    def HLoss(self, x):
+        b = torch.cat([-1*(F.softmax(x_, dim=1) * F.log_softmax(x_, dim=1)).sum() for x_ in x])
+        return torch.sum(b)
+
+
+    def interDis(self, wts):
+        wvecs0 =  self.reformat(wts, 0)
+        wvecs1 =  self.reformat(wts, 1)
+
+        sum_dist = 0
+        for wv0 in wvecs0:
+            dist = 1000
+            for wv1 in wvecs1:
+                dist_ = torch.norm(wv0 - wv1)
+                if dist_ < dist:
+                    dist = dist_
+            sum_dist += dist
+
+        return sum_dist
+
+
 
     def forward(self, x, y, lts, is_training=False, epoch=1):
         """
@@ -166,6 +187,8 @@ class Debate(nn.Module):
 
         # individual agent optimizer
         logs = {}
+        inter_dis = self.interDis(w_ts)
+
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
             wvecs =  self.reformat(w_ts, ai)
@@ -182,9 +205,8 @@ class Debate(nn.Module):
             # reward:          (batch, num_glimpses)
             log_probs = log_probs_agent
             log_probs = F.softmax(log_probs).detach()
-            values, preds = torch.max(log_probs, 1)
 
-            reward = self.reward_fns[ai](log_probs, jpred)
+            reward = self.reward_fns[ai](z, wvecs, log_probs, jpred)
             reward = reward.unsqueeze(1).repeat(1, self.narguments)
             loss_baseline = F.mse_loss(baselines, reward)
 
@@ -193,14 +215,18 @@ class Debate(nn.Module):
             # TODO: thought https://github.com/kevinzakka/recurrent-visual-attention/issues/10#issuecomment-378692338
             adjusted_reward = reward - baselines.detach()
             loss_reinforce = torch.mean(-log_pi*adjusted_reward)
-
             # loss_reinforce = torch.sum(-logpi_*adjusted_reward, dim=1)
             # loss_reinforce = torch.mean(loss_reinforce)
 
 
             # sum up into a hybrid loss
+            intra_loss = self.HLoss(wvecs)
+            regularization_loss = intra_loss - inter_dis
             loss_classifier += qloss
-            loss = self.rl_weightage*(loss_reinforce + loss_baseline) + loss_classifier
+            loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
+                     loss_classifier + regularization_loss
+
+
 
             correct = (preds_agent == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -213,9 +239,8 @@ class Debate(nn.Module):
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
             logs[ai]['preds'] = preds_agent
-            logs[ai]['dpreds'] = preds
             logs[ai]['jpred'] = jpred
-            logs[ai]['locs'] = wvecs
+            logs[ai]['wvecs'] = wvecs
 
         return logs
 
@@ -238,6 +263,7 @@ class Debate(nn.Module):
         jpred = torch.max(self.judge(x), 1)[1].detach()
 
         logs = {}
+        inter_dis = self.interDis(w_ts)
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
             wvecs =  self.reformat(w_ts, ai)
@@ -268,7 +294,6 @@ class Debate(nn.Module):
             # reward:   (batch)
             log_probs = log_probs_agent
             log_probs = F.softmax(log_probs).detach()
-            values, preds = torch.max(log_probs, 1)
             reward = self.reward_fns[ai](log_probs, jpred)
 
             # Baseline Loss
@@ -285,8 +310,12 @@ class Debate(nn.Module):
             # loss_reinforce = torch.mean(loss_reinforce)
 
             # sum up into a hybrid loss
+            intra_loss = self.HLoss(wvecs)
+            regularization_loss = intra_loss - inter_dis
             classifier_loss += qloss
-            loss = self.rl_weightage*(loss_reinforce + loss_baseline) + classifier_loss
+            loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
+                     classifier_loss + regularization_loss
+
 
              # calculate accuracy
             correct = (preds_agent == jpred).float()
@@ -301,9 +330,8 @@ class Debate(nn.Module):
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
             logs[ai]['preds'] = preds_agent
-            logs[ai]['dpreds'] = preds
             logs[ai]['jpred'] = jpred
-            logs[ai]['locs'] = wvecs
+            logs[ai]['wvecs'] = wvecs
             logs[ai]['con_mat'] = self.confusion_meters[ai]
 
         return logs
