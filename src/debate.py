@@ -152,7 +152,7 @@ class Debate(nn.Module):
         return torch.sum(b)
 
 
-    def DDistance(self, dists):
+    def DDistance(self, dists, ai):
         """
         @param dists: list of list of categorical distribtuions
         """
@@ -163,12 +163,15 @@ class Debate(nn.Module):
         for wv0 in dist0:
             dist = 1000
             for wv1 in dist1:
-                dist_ = 0.5*(torch.norm(wv0 - wv1.detach()) +  torch.norm(wv0.detach() - wv1))
+                if ai == 0:
+                    dist_ = torch.norm(wv0 - wv1.detach())
+                else:
+                    dist_ = torch.norm(wv0.detach() - wv1)
                 if dist_ < dist:
                     dist = dist_
             sum_dist += dist
 
-        return 0 #sum_dist*1.0/dist0.shape[0]
+        return sum_dist*1.0/dist0.shape[0]
 
 
 
@@ -211,7 +214,6 @@ class Debate(nn.Module):
 
         # individual agent optimizer
         logs = {}
-        inter_dis = self.DDistance(arg_dists_t)
 
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
@@ -245,6 +247,7 @@ class Debate(nn.Module):
 
             # sum up into a hybrid loss
             intra_loss = self.HLoss(args_dist)
+            inter_dis = self.DDistance(arg_dists_t, ai)
             
             regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
@@ -293,8 +296,6 @@ class Debate(nn.Module):
         jpred = torch.max(self.judge(x_orig), 1)[1].detach()
 
         logs = {}
-        inter_dis = self.DDistance(arg_dists_t)
-
 
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
@@ -346,6 +347,8 @@ class Debate(nn.Module):
 
             # sum up into a hybrid loss
             intra_loss = self.HLoss(args_dist)
+            inter_dis = self.DDistance(arg_dists_t, ai)
+
             regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      classifier_loss + regularization_loss
