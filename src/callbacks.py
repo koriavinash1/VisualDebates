@@ -43,55 +43,31 @@ class PlotCbk(Callback):
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
     
-    def plot(self, imgs, locs, preds, dpreds, jpreds, Ys, epoch, batch_ind, name):
+    def plot(self, imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, name):
         if ((epoch % self.plot_freq == 0) and (batch_ind == 0)) or (epoch == -1):
             if self.use_gpu:
                 imgs = imgs.cpu()
-                locs = locs.cpu()
+                zs = zs.cpu() 
+                zs_idx = zs_idx.cpu()
+                arguments = arguments.cpu()
                 preds = preds.cpu()
-                dpreds = dpreds.cpu()
                 jpreds = jpreds.cpu()
                 Ys = Ys.cpu()
-            imgs = imgs.numpy()
-            locs = locs.numpy()
-            preds = preds.numpy()
-            dpreds = dpreds.numpy()
-            jpreds = jpreds.numpy()
-            Ys = Ys.numpy()
+
 
             pickle.dump(
-                imgs, open(
-                    self.plot_dir + "{}g_{}.p".format(name, epoch),
-                    "wb"
-                )
-            )
-            pickle.dump(
-                preds, open(
-                    self.plot_dir + "{}preds_{}.p".format(name, epoch),
-                    "wb"
-                )
-            )
-            pickle.dump(
-                dpreds, open(
-                    self.plot_dir + "{}dpreds_{}.p".format(name, epoch),
-                    "wb"
-                )
-            )
-            pickle.dump(
-                jpreds, open(
-                    self.plot_dir + "{}jpreds_{}.p".format(name, epoch),
-                    "wb"
-                )
-            )
-            pickle.dump(
-                Ys, open(
-                    self.plot_dir + "{}Ys_{}.p".format(name, epoch),
-                    "wb"
-                )
-            )
-            pickle.dump(
-                locs, open(
-                    self.plot_dir + "{}l_{}.p".format(name, epoch),
+                dict(
+                    imgs = imgs.numpy(),
+                    zs = zs.numpy(), 
+                    zs_idx = zs_idx.numpy(),
+                    arguments = arguments.numpy(),
+                    preds = preds.numpy(),
+                    jpreds = jpreds.numpy(),
+                    Ys = Ys.numpy()    
+                ),
+
+                open(
+                    self.plot_dir + "{}_logs_{}.p".format(name, epoch),
                     "wb"
                 )
             )
@@ -100,21 +76,22 @@ class PlotCbk(Callback):
         if isinstance(logs[list(logs.keys())[0]], dict):
             for key in logs.keys():
                 imgs = logs[key]['x'][:self.num_imgs]
-                locs = logs[key]['locs'][:self.num_imgs]
+                zs = logs[key]['z'][:self.num_imgs]
+                zs_idx = logs[key]['z_idx'][:self.num_imgs]
+                arguments = logs[key]['arguments'][:self.num_imgs]
                 preds = logs[key]['preds'][:self.num_imgs] 
-                dpreds = logs[key]['dpreds'][:self.num_imgs] 
                 jpreds = logs[key]['jpred'][:self.num_imgs]
-
                 Ys = logs[key]['y'][:self.num_imgs]
-                self.plot(imgs, locs, preds, dpreds, jpreds, Ys, epoch, batch_ind, str(key) + '_' +name)
+                self.plot(imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, str(key) + '_' +name)
         else:
             imgs = logs['x'][:self.num_imgs]
-            locs = logs['locs'][:self.num_imgs]
+            zs = logs['z'][:self.num_imgs]
+            zs_idx = logs['z_idx'][:self.num_imgs]
+            arguments = logs['arguments'][:self.num_imgs]
             preds = logs['preds'][:self.num_imgs] 
-            dpreds = logs['dpreds'][:self.num_imgs] 
             jpreds = logs['jpred'][:self.num_imgs] 
             Ys = logs['y'][:self.num_imgs]
-            self.plot(imgs, locs, preds, dpreds, jpreds, Ys, epoch, batch_ind, name)
+            self.plot(imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, name)
 
 
 class TensorBoard(Callback):

@@ -267,6 +267,7 @@ class Debate(nn.Module):
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
             logs[ai]['jpred'] = jpred
+            logs[ai]['z_idx'] = symbol_idxs
             logs[ai]['preds'] = preds_agent
             logs[ai]['arguments'] = args_idx
 
@@ -366,8 +367,9 @@ class Debate(nn.Module):
             logs[ai]['y'] = y
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
-            logs[ai]['preds'] = preds_agent
             logs[ai]['jpred'] = jpred
+            logs[ai]['z_idx'] = symbol_idxs
+            logs[ai]['preds'] = preds_agent
             logs[ai]['arguments'] = args_idx
             logs[ai]['con_mat'] = self.confusion_meters[ai]
 
