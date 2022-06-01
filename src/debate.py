@@ -30,7 +30,8 @@ class Debate(nn.Module):
         self.contrastive = args.contrastive
         self.rl_weightage = args.rl_weightage
 
-        self.name = 'Debate: {}_{}_{}_{}_{}_{}'.format(
+        self.name = 'Exp-{}-Debate: {}_{}_{}_{}_{}_{}'.format(
+                                        args.name,
                                         args.rnn_type, 
                                         args.narguments, 
                                         args.nconcepts,
@@ -79,7 +80,7 @@ class Debate(nn.Module):
         z, loss, (onehot_symbols, symbol_idx), \
             cbvar,  tdis, hsw, r = self.discretizer(self.judge.features(x))
         
-        return z, loss, cbvar, tdis, hsw, r
+        return z.detach(), symbol_idx, loss, cbvar, tdis, hsw, r
 
 
     def step(self, z):
@@ -88,69 +89,86 @@ class Debate(nn.Module):
         
         # init lists for location, hidden vector, baseline and log_pi
         # dimensions:    (narguments + 1, nagents, *)
-        b_ts = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
-        log_pis = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
-        w_ts = [[ agent.initLoc(batch_size) for agent in self.agents ] for _ in range(self.narguments + 1)]
-        h_t = [ agent.init_rnn_hidden(batch_size) for agent in self.agents ]
+        bs_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
+        hs_t = [ agent.init_rnn_hidden(batch_size) for agent in self.agents ]
+        args_idx_t = [[ agent.init_argument(batch_size) for agent in self.agents ] for _ in range(self.narguments + 1)]
+        arg_dists_t = [[ None for agent in self.agents ] for _ in range(self.narguments + 1)]
+        logpis_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
 
         # process
         for t in range(1, self.narguments + 1):
             for ai, agent in enumerate(self.agents):
-                wt_const = copy.deepcopy(w_ts[t-1])
-                wt_agent = wt_const[ai]
-                del wt_const[ai]
+                args_idx_t_const = copy.deepcopy(args_idx_t[t-1])
+
+                # mapping idx to args---------------------
+                args_t_const = [torch.cat([z[i, _idx_, ...].unsqueeze(0) \
+                                for i, _idx_ in enumerate(idx_)], 0) \
+                                for idx_ in args_idx_t_const]
+                args_t_agent = args_t_const[ai]
+                del args_t_const[ai]
                 
-                if len(wt_const) > 0:
-                    wt_const = torch.cat([wt_.detach().unsqueeze(1) for wt_ in wt_const], dim=1) # batch_size, nagents -1, ...
-                    wt_const = wt_const.squeeze()
-                    wt_const.requires_grad = False
+                if len(args_t_const) > 0:
+                    args_t_const = torch.cat([arg_.unsqueeze(1) for arg_ in args_t_const], dim=1) # batch_size, nagents -1, ...
+                    args_t_const = args_t_const.squeeze()
+                    args_t_const.requires_grad = False
 
 
-                h_t[ai], w_t, b_t, log_pi = agent.forwardStep(z, 
-                                                            wt_agent, 
-                                                            wt_const, 
-                                                            h_t[ai])
+                hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
+                                                            args_t_agent, 
+                                                            args_t_const, 
+                                                            hs_t[ai])
 
-                w_ts[t][ai] = w_t.detach(); 
-                b_ts[t][ai] = b_t; 
-                log_pis[t][ai] = log_pi
+                args_idx_t[t][ai] = arg_idx_t; 
+                arg_dists_t[t][ai] = dist; 
+                logpis_t[t][ai] = log_pi
+                bs_t[t][ai] = b_t; 
 
         # remove first time stamp 
-        b_ts = b_ts[1:]; log_pis = log_pis[1:]; w_ts = w_ts[1:]
-        return w_ts, b_ts, log_pis, h_t
+        bs_t = bs_t[1:]; logpis_t = logpis_t[1:]; 
+        args_idx_t = args_idx_t[1:]; arg_dists_t = arg_dists_t[1:]
+
+        return args_idx_t, arg_dists_t, bs_t, logpis_t, hs_t
 
 
-    def reformat(self, x, ai):
+    def reformat(self, x, ai, dist=False):
         """
         @param x: data. [narguments, [nagents, (batch_size, ...)]]
         returns x (batch_size, narguments, ...)
         """
         agents_data = []
         for t in range(self.narguments):
-            agents_data.append(x[t][ai].unsqueeze(0))
+            if not dist: agents_data.append(x[t][ai].unsqueeze(0))
+            else: agents_data.append(x[t][ai].probs.unsqueeze(0))
+
         agent_data = torch.cat(agents_data, dim=0)
         return torch.transpose(agent_data, 0, 1)
 
     def HLoss(self, x):
+        """
+        @param x: probability vector (probabilities of categorical disributions)
+        """
         x = x.reshape(x.shape[0], -1)
         b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
         return torch.sum(b)
 
 
-    def interDis(self, wts):
-        wvecs0 =  self.reformat(wts, 0).transpose(0, 1)
-        wvecs1 =  self.reformat(wts, 1).transpose(0, 1)
+    def DDistance(self, dists):
+        """
+        @param dists: list of list of categorical distribtuions
+        """
+        dist0 =  self.reformat(dists, 0, True).transpose(0, 1)
+        dist1 =  self.reformat(dists, 1, True).transpose(0, 1)
 
         sum_dist = 0
-        for wv0 in wvecs0:
+        for wv0 in dist0:
             dist = 1000
-            for wv1 in wvecs1:
-                dist_ = torch.norm(wv0 - wv1)
+            for wv1 in dist1:
+                dist_ = 0.5*(torch.norm(wv0 - wv1.detach()) +  torch.norm(wv0.detach() - wv1))
                 if dist_ < dist:
                     dist = dist_
             sum_dist += dist
 
-        return sum_dist*1.0/wvecs0.shape[0]
+        return 0 #sum_dist*1.0/dist0.shape[0]
 
 
 
@@ -167,7 +185,7 @@ class Debate(nn.Module):
         if not is_training:
             return self.forward_test(x, y, epoch)
 
-        z, qloss, cbvar, dis, hsw, r = self.fext(x)
+        z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
 
         # Judge prediction
         with torch.no_grad():
@@ -184,7 +202,7 @@ class Debate(nn.Module):
 
 
 
-        w_ts, b_ts, log_pis, h_t = self.step(z.detach().clone())
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z.detach().clone())
 
 
         # TODO: include accurracy metric...
@@ -193,11 +211,12 @@ class Debate(nn.Module):
 
         # individual agent optimizer
         logs = {}
-        inter_dis = self.interDis(w_ts)
+        inter_dis = self.DDistance(arg_dists_t)
 
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
-            wvecs =  self.reformat(w_ts, ai)
+            args_idx =  self.reformat(args_idx_t, ai)
+            args_dist = self.reformat(arg_dists_t, ai, True)
             log_pi = self.reformat(log_pis, ai)
 
 
@@ -209,10 +228,9 @@ class Debate(nn.Module):
 
             # Baseline Loss
             # reward:          (batch, num_glimpses)
-            log_probs = log_probs_agent
-            log_probs = F.softmax(log_probs).detach()
+            log_probs = F.softmax(log_probs_agent).detach()
 
-            reward = self.reward_fns[ai](z, wvecs, log_probs, jpred)
+            reward = self.reward_fns[ai](z, symbol_idxs, args_idx, log_probs, jpred)
             reward = reward.unsqueeze(1).repeat(1, self.narguments)
             loss_baseline = F.mse_loss(baselines, reward)
 
@@ -226,27 +244,28 @@ class Debate(nn.Module):
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(wvecs) # not updating policy newtork, which we need it to update
+            intra_loss = self.HLoss(args_dist)
             
-            regularization_loss = intra_loss - inter_dis
+            regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      loss_classifier + regularization_loss
-
-            # print (loss, loss_reinforce, loss_baseline, loss_classifier, regularization_loss)
 
             correct = (preds_agent == jpred).float()
             acc = 100 * (correct.sum() / len(y))
 
             agent.optStep(loss)
+
+
+            # Logs record
             logs[ai] = {}
             logs[ai]['x'] = x
             logs[ai]['z'] = z
             logs[ai]['y'] = y
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
-            logs[ai]['preds'] = preds_agent
             logs[ai]['jpred'] = jpred
-            logs[ai]['wvecs'] = wvecs
+            logs[ai]['preds'] = preds_agent
+            logs[ai]['arguments'] = args_idx
 
         return logs
 
@@ -262,26 +281,31 @@ class Debate(nn.Module):
         # baselines:        (batch*M, num_glimpses)
         # log_pi:           (batch*M, num_glimpses)
         # log_probas:       (batch*M, num_class)
-        z, qloss, cbvar, dis, hsw, r = self.fext(x)
-        w_ts, b_ts, log_pis, h_t = self.step(z)
-        z = z.contiguous().view((self.M, x_orig.shape[0]) + z.shape[1:])
-        z = torch.mean(z, dim = 0)
+
+
+
+        z, sampled_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
+        z = z[0]; sampled_idxs = sampled_idxs[0]
 
 
         # Judge prediction
         jpred = torch.max(self.judge(x_orig), 1)[1].detach()
 
         logs = {}
-        inter_dis = self.interDis(w_ts)
+        inter_dis = self.DDistance(arg_dists_t)
+
+
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
-            wvecs =  self.reformat(w_ts, ai)
+            args_idx =  self.reformat(args_idx_t, ai)
+            args_dist = self.reformat(arg_dists_t, ai, True)
             log_pi = self.reformat(log_pis, ai)
 
 
             # Average     
-            wvecs = wvecs.contiguous().view((self.M, x_orig.shape[0]) + wvecs.shape[1:])
-            wvecs = torch.mean(wvecs, dim = 0)
+            args_idx = args_idx.contiguous().view((self.M, x_orig.shape[0]) + args_idx.shape[1:])
+            args_idx = torch.mode(args_idx, dim = 0) # index max voting for M montecarlo iterations
              
             log_probs_agent = agent.classifier(h_t[ai][0])
             log_probs_agent = log_probs_agent.contiguous().view(self.M, -1, log_probs_agent.shape[-1])
@@ -304,9 +328,8 @@ class Debate(nn.Module):
             # Prediction Loss & Reward
             # preds:    (batch)
             # reward:   (batch)
-            log_probs = log_probs_agent
-            log_probs = F.softmax(log_probs).detach()
-            reward = self.reward_fns[ai](z, wvecs, log_probs, jpred)
+            log_probs = F.softmax(log_probs_agent).detach()
+            reward = self.reward_fns[ai](z, symbol_idxs, args_idx, log_probs, jpred)
 
             # Baseline Loss
             # reward:          (batch, num_glimpses)
@@ -317,13 +340,13 @@ class Debate(nn.Module):
             # TODO: thought https://github.com/kevinzakka/recurrent-visual-attention/issues/10#issuecomment-378692338
             adjusted_reward = reward - baselines.detach()
             loss_reinforce = torch.mean(-log_pi*adjusted_reward)
-
             # loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
             # loss_reinforce = torch.mean(loss_reinforce)
 
+
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(wvecs)
-            regularization_loss = intra_loss - inter_dis
+            intra_loss = self.HLoss(args_dist)
+            regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      classifier_loss + regularization_loss
 
@@ -342,7 +365,7 @@ class Debate(nn.Module):
             logs[ai]['loss'] = loss
             logs[ai]['preds'] = preds_agent
             logs[ai]['jpred'] = jpred
-            logs[ai]['wvecs'] = wvecs
+            logs[ai]['arguments'] = args_idx
             logs[ai]['con_mat'] = self.confusion_meters[ai]
 
         return logs

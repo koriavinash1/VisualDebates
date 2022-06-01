@@ -21,6 +21,7 @@ def parse_args():
 
     import sys
     parser = argparse.ArgumentParser(description='')
+    parser.add_argument('--name', type=str, default='test', help='Name of an exp')
     parser.add_argument('--M', type=float, default=10, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
@@ -179,29 +180,34 @@ if __name__ == '__main__':
     manipulator_prob = 0.6
     EPS = 1e-3
 
-    def get_reward(z, wvecs, logits, y, attacker=False):
+    def get_reward(z, sampled_idx, arguments, logits, y, attacker=False):
         pred = torch.max(logits, dim=1)[0]
         rand_prob = np.random.uniform(0,1)
 
         z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
-        z_pertub = z.clone()
+        
 
         @torch.no_grad()
-        def get_AS(z, wvec):
+        def get_AS(z, arg):
             orig_score = model.quantized_classifier(z)
 
-            perturbed_score = model.quantized_classifier(z_pertub*(1 - wvec))
-            delta =  (orig_score - perturbed_score)
+            z_pertub = z.clone()
+            z_pertub[sampled_idx == arg] = 0
+            perturbed_score = model.quantized_classifier(z_pertub)
+
+            delta =  torch.abs(orig_score - perturbed_score)
+
+            # class specific prob difference
             delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
 
             rewards = torch.zeros_like(delta)
 
             if attacker:
                 rewards[delta > EPS] = 1     
-                rewards[delta < -EPS] =  -1
+                # rewards[delta < -EPS] =  -1
             else:
-                rewards[delta > EPS] = -1
-                rewards[delta < -EPS] = 1
+                # rewards[delta > EPS] = -1
+                rewards[delta < EPS] = 1
             return rewards 
 
         cummilative_AS = 0
@@ -218,8 +224,8 @@ if __name__ == '__main__':
         return args.reward_weightage*reward + cummilative_AS
 
     
-    reward_fns = [lambda z, wvecs, p, y: get_reward(z, wvecs, p, y),
-                    lambda z, wvecs, p, y: get_reward(z, wvecs, p, y, True),]
+    reward_fns = [lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y),
+                    lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y, True),]
     model.reward_fns = reward_fns
 
 

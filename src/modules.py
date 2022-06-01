@@ -12,6 +12,8 @@ from geomstats.geometry.hypersphere import Hypersphere
 from geomstats.geometry.hypersphere import HypersphereMetric
 from einops import rearrange
 
+from torch.distributions import Categorical
+
 
 class Clamp(torch.autograd.Function):
     @staticmethod
@@ -375,49 +377,59 @@ class ActionNet(nn.Module):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, use_gpu):
+    def __init__(self, concept_size, input_size, output_size, hidden_size, use_gpu):
         """
-        @param input_size: input size of the fc layer.
-        @param output_size: output size of the fc layer.
+        @param input_size: total number of sampled symbols from a codebook.
+        @param concept_size: dimension of an individual sampled symbol.
+        @param hidden_size: hidden unit size of core recurrent/GRU network.
+        @param output_size: output dimension of core recurrent/GRU network.
         @param std: standard deviation of the normal distribution.
         """
         super(PolicyNet, self).__init__()
-        self.fc1 = nn.Linear(input_size, input_size//2)
-        self.fc2 = nn.Linear(input_size, input_size//2)
-        self.fc3 = nn.Linear (hidden_size, input_size//2)
+        self.fc1 = nn.Linear(concept_size, output_size//2)
+        self.fc2 = nn.Linear(concept_size, output_size//2)
+        self.fc3 = nn.Linear (hidden_size, output_size//2)
+        self.fc4 = nn.Linear (input_size, output_size//2)
 
-        self.combine = nn.Linear(3*input_size//2, output_size)
+        self.combine = nn.Linear(2*output_size, output_size)
 
         if use_gpu:
             self.cuda()
 
-    def forward(self, z, w0, w1, h_t):
-
+    def forward(self, z, arg1, arg2, h):
+        
+        batch_size = z.shape[0]
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-        z1 = F.relu6(self.fc1(z*w0))
-        z2 = F.relu6(self.fc2(z*w1))
-        z3 = F.relu6(self.fc3(h_t))
 
-        logits = self.combine(torch.cat((z1, z2, z3), dim=1))
+        z_info = F.relu6(self.fc4(z))
+        arg1_info = F.relu6(self.fc1(arg1.view(batch_size, -1)))
+        arg2_info = F.relu6(self.fc2(arg2.view(batch_size, -1)))
+        history = F.relu6(self.fc3(h))
+
+        logits = self.combine(torch.cat((z_info, 
+                                            arg1_info, 
+                                            arg2_info, 
+                                            history), dim=1))
         return F.softmax(logits)
 
 
 
 class ModulatorNet(nn.Module):
-    def __init__(self, input_size, output_size, use_gpu):
+    def __init__(self, concept_size, output_size, use_gpu):
         """
-        @param input_size: input size of the fc layer, total number of sampled symbols.
+        @param concept_size: dimension of an individual sampled symbol.
         @param output_size: output size of the fc layer, hidden vector dimension.
         """
         super(ModulatorNet, self).__init__()
-        self.fc = nn.Linear(input_size, output_size)
+        self.fc = nn.Linear(concept_size, output_size)
         if use_gpu:
             self.cuda()
 
-    def forward(self, z, w):
-        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-        z = z*w # attention
-        return F.relu6(self.fc(z))
+    def forward(self, z, arg_idx):
+        batch_size = z.shape[0]
+        arg = torch.cat([z[i, _idx_].unsqueeze(0) \
+                                for i, _idx_ in enumerate(arg_idx.detach())], 0)
+        return F.relu6(self.fc(arg.view(batch_size, -1)))
 
 
 class BaselineNet(nn.Module):
@@ -427,15 +439,15 @@ class BaselineNet(nn.Module):
 
     Args
     ----
-    - input_size: input size of the fc layer.
-    - output_size: output size of the fc layer.
-    - h_t: the hidden state vector of the core network
-      for the current time step `t`.
+    @param input_size: input size of the fc layer.
+    @param output_size: output size of the fc layer.
+    @param h_t: the hidden state vector of the core network
+                for the current time step `t`.
 
     Returns
     -------
-    - b_t: a 2D vector of shape (B, 1). The baseline
-      for the current time step `t`.
+    @param b_t: a 2D vector of shape (B, 1). The baseline
+                for the current time step `t`.
     """
     def __init__(self, input_size, output_size):
         super(BaselineNet, self).__init__()
@@ -459,13 +471,14 @@ class PlayerNet(nn.Module):
         self.rnn = core_network(args.rnn_input_size, 
                                     args.rnn_hidden, 
                                     args.use_gpu)
-        self.modulator_net = ModulatorNet(args.nfeatures,
-                                        args.rnn_input_size,
-                                        args.use_gpu)
-        self.policy_net = PolicyNet(args.nfeatures,
-                                        args.nfeatures,
-                                        args.rnn_hidden, 
-                                        args.use_gpu)
+        self.modulator_net = ModulatorNet(concept_size = args.cdim,
+                                        output_size = args.rnn_input_size,
+                                        use_gpu = args.use_gpu)
+        self.policy_net = PolicyNet(concept_size = args.cdim, 
+                                    input_size = args.nfeatures, 
+                                    output_size = args.nfeatures, 
+                                    hidden_size = args.rnn_hidden,
+                                    use_gpu = args.use_gpu)
 
 
         self.classifier = ActionNet(args.rnn_hidden, args.num_class)
@@ -476,47 +489,24 @@ class PlayerNet(nn.Module):
             self.cuda()
 
 
-    def step(self, z, w0, w1, h_t):
+    def step(self, z, arg1_t, arg2_t, h_t):
         """
-        @param x: image. (batch, channel, height, width)
-        @param l_t:
+        @param z: image. (batch, channel, height, width)
+        @param arg1_t:
+        @param arg2_t:
+        @param h_t:
         """
-        w_current = self.policy_net(z, w0, w1, h_t[0])
-        z_current = self.modulator_net(z, w_current)
-        h_t = self.rnn(z_current, h_t)
 
+        argument_prob = self.policy_net(z, arg1_t, arg2_t, h_t[0])
+        argument_dist = Categorical(argument_prob)
+        arg_current = argument_dist.sample()
+
+        z_current = self.modulator_net(z, arg_current)
+        h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        log_pi = torch.log(0.001 + w_current)
+        log_pi = argument_dist.log_prob(arg_current)
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
-        log_pi = log_pi.sum(dim=1)
+        # log_pi = log_pi.sum(dim=1)
 
-        return h_t, w_current, b_t, log_pi
-
-
-    def forward(self, x, l_t):
-        """
-        @param x: image. (batch, channel, height, width)
-        @param l_t: initial location. (batch, 2)
-
-        @return hiddens: hidden states (output) of rnn. (batch, narguments, rnn_hidden)
-        @return locs: locations. (batch, 2)*narguments
-        @return baselines: (batch, narguments)
-        @return log_pi: probabilities for each location trial. (batch, narguments)
-        """
-        batch_size = x.shape[0]
-        h_t = self.rnn.init_hidden(batch_size)
-
-        wvecs = []
-        baselines = []
-        log_pi = []
-        for t in range(self.narguments):
-            h_t, w_t, b_t, p_t = self.step(x, l_t, h_t)
-            wvecs.append(w_t)
-            baselines.append(b_t)
-            log_pi.append(p_t)
-
-        log_probas = self.classifier(h_t[0])
-        baselines = torch.stack(baselines).transpose(1, 0)
-        log_pi = torch.stack(log_pi).transpose(1, 0)
-        return wvecs, baselines, log_pi, log_probas
+        return h_t, arg_current.detach(), b_t, log_pi, argument_dist

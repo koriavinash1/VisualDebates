@@ -16,21 +16,22 @@ class RecurrentAttentionAgent(nn.Module):
         self.nfeatures = args.nfeatures
         self.M = args.M
 
-
         self.ram_net = PlayerNet(args)
 
-        self.name = 'Agent:{}_{}_{}_{}'.format(iagent,
+        self.name = 'Exp-{}-Agent:{}_{}_{}_{}'.format(args.name,
+                                        iagent,
                                         args.rnn_type, 
                                         args.narguments, 
                                         args.nconcepts)
 
         self.__init_optimizer(args.init_lr)
 
-    def initLoc(self, batch_size):
+    def init_argument(self, batch_size):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
-        l_t = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
-        l_t = Variable(l_t).type(dtype)
-        return l_t
+        arg_0 = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
+        arg_0 = Variable(arg_0).type(dtype)
+        arg_0 = F.softmax(arg_0)
+        return torch.argmax(arg_0, 1)
     
     def init_rnn_hidden(self, batch_size):
         return self.ram_net.rnn.init_hidden(batch_size)
@@ -41,8 +42,8 @@ class RecurrentAttentionAgent(nn.Module):
                             lr=lr, 
                             weight_decay=weight_decay)
 
-    def forwardStep(self, x, lt_agent, lt_other, h_t):
-        return self.ram_net.step(x, lt_agent, lt_other, h_t)
+    def forwardStep(self, x, arg_agent, arg_other, h_t):
+        return self.ram_net.step(x, arg_agent, arg_other, h_t)
 
     def optStep(self, loss):
         self.optimizer.zero_grad()
