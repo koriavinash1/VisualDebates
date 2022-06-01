@@ -12,26 +12,23 @@ class RecurrentAttentionAgent(nn.Module):
         Initialize the recurrent attention model and its different components.
         """
         super(RecurrentAttentionAgent, self).__init__()
-        self.std = args.std
         self.use_gpu = args.use_gpu
+        self.nfeatures = args.nfeatures
         self.M = args.M
+
 
         self.ram_net = PlayerNet(args)
 
-        self.name = 'Agent:{}_{}_{}_{}_{}x{}_{}_{}'.format(iagent,
-                                        args.model, 
+        self.name = 'Agent:{}_{}_{}_{}'.format(iagent,
                                         args.rnn_type, 
                                         args.narguments, 
-                                        args.patch_size, 
-                                        args.patch_size, 
-                                        args.glimpse_scale, 
-                                        args.nglimpses)
+                                        args.nconcepts)
 
         self.__init_optimizer(args.init_lr)
 
     def initLoc(self, batch_size):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
-        l_t = torch.Tensor(batch_size, 2).uniform_(-1, 1)
+        l_t = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
         l_t = Variable(l_t).type(dtype)
         return l_t
     
@@ -49,7 +46,7 @@ class RecurrentAttentionAgent(nn.Module):
 
     def optStep(self, loss):
         self.optimizer.zero_grad()
-        loss.backward(retain_graph=True)
+        loss.backward()
         self.optimizer.step()
 
     def classifier(self, h):

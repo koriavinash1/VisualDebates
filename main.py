@@ -25,7 +25,6 @@ def parse_args():
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
-    common_arg.add_argument('--glimpse_hidden', type=int, default=128, help='hidden size of glimpse fc')
     common_arg.add_argument('--img_size', type=int, default=32, help='size of extracted patch at highest res')
     common_arg.add_argument('--narguments', type=int, default=6, help='# of glimpses, i.e. BPTT iterations')
 
@@ -33,8 +32,9 @@ def parse_args():
     # codebook params
     vq_network_arg = parser.add_argument_group('vector quantizer Params')
     vq_network_arg.add_argument('--nconcepts', type=int, default=512, help='total number of discrete symbols in a codebook')
+    vq_network_arg.add_argument('--nfeatures', type=int, default=64, help='total number of sampled discrete symbols for every image')
     vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
-    vq_network_arg.add_argument('--beta', type=float default=0.9, help='component of quantization loss')
+    vq_network_arg.add_argument('--beta', type=float, default=0.9, help='component of quantization loss')
     vq_network_arg.add_argument('--disentangle', type=bool, default=True, help='enforces disentanglement with addditional regularizations')
     vq_network_arg.add_argument('--remap', default=None, help='for remapping idx ot desired dimension')
     vq_network_arg.add_argument('--unknown_index', type=str, default="random", help='remap parameter')
@@ -44,7 +44,8 @@ def parse_args():
     # core_network params
     core_network_arg = parser.add_argument_group('core_network Params')
     core_network_arg.add_argument('--rnn_hidden', type=int, default=256, help='hidden size of the rnn')  # on purpose set equal to glimpse_hidden + loc_hidden, can be changed
-    core_network_arg.add_argument('--rnn_type', type=str, default='RNN', help='Type of RNN Cell to use, RNN/LSTM/GRU')  # on purpose set equal to glimpse_hidden + loc_hidden, can be changed
+    core_network_arg.add_argument('--rnn_input_size', type=int, default=256, help='input size of the rnn')  # on purpose set equal to glimpse_hidden + loc_hidden, can be changed
+    core_network_arg.add_argument('--rnn_type', type=str, default='GRU', help='Type of RNN Cell to use, RNN/LSTM/GRU')  # on purpose set equal to glimpse_hidden + loc_hidden, can be changed
 
     # Parameters for confusion matrix
     cnf_matrix_arg = parser.add_argument_group('Params made for confusion matrix')
@@ -182,26 +183,31 @@ if __name__ == '__main__':
         pred = torch.max(logits, dim=1)[0]
         rand_prob = np.random.uniform(0,1)
 
-        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).flatten()
+        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
+        z_pertub = z.clone()
 
         @torch.no_grad()
         def get_AS(z, wvec):
             orig_score = model.quantized_classifier(z)
-            z = z*wvec
-            perturbed_score = model.quantized_classifier(z)
-            delta =  orig_score - perturbed_score
+
+            perturbed_score = model.quantized_classifier(z_pertub*(1 - wvec))
+            delta =  (orig_score - perturbed_score)
+            delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
+
+            rewards = torch.zeros_like(delta)
 
             if attacker:
-                if delta > EPS: return 1
-                elif delta < -EPS: return -1
-                else: return 0
+                rewards[delta > EPS] = 1     
+                rewards[delta < -EPS] =  -1
             else:
-                if delta > EPS: return -1
-                elif delta < -EPS: return 1
-                else: return 0
+                rewards[delta > EPS] = -1
+                rewards[delta < -EPS] = 1
+            return rewards 
 
-        AS_scores = [get_AS(z, w) for w in wvecs]
-        cummilative_AS = np.sum(AS_scores)
+        cummilative_AS = 0
+        if args.contrastive:
+            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for w in wvecs.transpose(0, 1)], 0)
+            cummilative_AS = torch.sum(AS_scores, 0)
 
 
         if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
@@ -209,12 +215,11 @@ if __name__ == '__main__':
         else:
             reward = -(pred == y).float()
 
-
         return args.reward_weightage*reward + cummilative_AS
 
     
-    reward_fns = [lambda p, y: get_reward(p, y),
-                    lambda p, y: get_reward(p, y, True),]
+    reward_fns = [lambda z, wvecs, p, y: get_reward(z, wvecs, p, y),
+                    lambda z, wvecs, p, y: get_reward(z, wvecs, p, y, True),]
     model.reward_fns = reward_fns
 
 
@@ -244,10 +249,10 @@ if __name__ == '__main__':
                       start_epoch=start_epoch,
                       epochs=args.epochs,
                       callbacks=[
-                          PlotCbk(args.plot_dir, model, 
-                                      args.plot_num_imgs, 
-                                    args.plot_freq, 
-                                    args.use_gpu),
+                        #   PlotCbk(args.plot_dir, model, 
+                        #               args.plot_num_imgs, 
+                        #             args.plot_freq, 
+                        #             args.use_gpu),
                           # TensorBoard(model, args.log_dir),
                           ModelCheckpoint(model, 
                                             args.ckpt_dir,

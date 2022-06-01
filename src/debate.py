@@ -30,16 +30,12 @@ class Debate(nn.Module):
         self.contrastive = args.contrastive
         self.rl_weightage = args.rl_weightage
 
-        self.name = '{}_{}_{}_{}x{}_{}_{}_{}_{}_{}_{}'.format(args.model, 
+        self.name = 'Debate: {}_{}_{}_{}_{}_{}'.format(
                                         args.rnn_type, 
                                         args.narguments, 
-                                        args.patch_size, 
-                                        args.patch_size, 
-                                        args.glimpse_scale, 
-                                        args.nglimpses,
-                                        args.glimpse_hidden,
-                                        args.loc_hidden,
+                                        args.nconcepts,
                                         args.rnn_hidden,
+                                        args.rnn_input_size,
                                         args.reward_weightage)
 
         self.reward_fns = [None for _ in range(self.nagents)]
@@ -73,22 +69,23 @@ class Debate(nn.Module):
             self.confusion_meters.append(confusion_meter)
 
 
-        self.quantized_classifier = ActionNet(args.n_symbols, args.num_class)
-        self.quantized_optimizer = torch.optim.Adam (self.quantized_classifier.parameters(), 
-                                        lr=args.init_lr, weight_decay=1e-5)
+        self.quantized_classifier = ActionNet(args.nfeatures, args.n_class)
+        self.quantized_optimizer = torch.optim.Adam (list(self.discretizer.parameters()) + \
+                                                    list(self.quantized_classifier.parameters()), 
+                                                    lr=args.init_lr, weight_decay=1e-5)
 
 
     def fext(self, x):
         z, loss, (onehot_symbols, symbol_idx), \
             cbvar,  tdis, hsw, r = self.discretizer(self.judge.features(x))
+        
         return z, loss, cbvar, tdis, hsw, r
 
 
-    def step(self, x):
-        batch_size = x.shape[0]
+    def step(self, z):
+        batch_size = z.shape[0]
         
-        z, q_loss, _, cbvar, dis, hsw, r = self.fext(x)
-
+        
         # init lists for location, hidden vector, baseline and log_pi
         # dimensions:    (narguments + 1, nagents, *)
         b_ts = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
@@ -99,12 +96,13 @@ class Debate(nn.Module):
         # process
         for t in range(1, self.narguments + 1):
             for ai, agent in enumerate(self.agents):
-                wt_const = copy.deepcopy(w_ts[t-1].detach())
+                wt_const = copy.deepcopy(w_ts[t-1])
                 wt_agent = wt_const[ai]
                 del wt_const[ai]
                 
                 if len(wt_const) > 0:
-                    wt_const = torch.cat([wt_.unsqueeze(1) for wt_ in wt_const], dim=1) # batch_size, nagents -1, ...
+                    wt_const = torch.cat([wt_.detach().unsqueeze(1) for wt_ in wt_const], dim=1) # batch_size, nagents -1, ...
+                    wt_const = wt_const.squeeze()
                     wt_const.requires_grad = False
 
 
@@ -113,13 +111,13 @@ class Debate(nn.Module):
                                                             wt_const, 
                                                             h_t[ai])
 
-                w_ts[t][ai] = w_t; 
+                w_ts[t][ai] = w_t.detach(); 
                 b_ts[t][ai] = b_t; 
                 log_pis[t][ai] = log_pi
 
         # remove first time stamp 
         b_ts = b_ts[1:]; log_pis = log_pis[1:]; w_ts = w_ts[1:]
-        return z, q_loss, w_ts, b_ts, log_pis, h_t
+        return w_ts, b_ts, log_pis, h_t
 
 
     def reformat(self, x, ai):
@@ -134,13 +132,14 @@ class Debate(nn.Module):
         return torch.transpose(agent_data, 0, 1)
 
     def HLoss(self, x):
-        b = torch.cat([-1*(F.softmax(x_, dim=1) * F.log_softmax(x_, dim=1)).sum() for x_ in x])
+        x = x.reshape(x.shape[0], -1)
+        b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
         return torch.sum(b)
 
 
     def interDis(self, wts):
-        wvecs0 =  self.reformat(wts, 0)
-        wvecs1 =  self.reformat(wts, 1)
+        wvecs0 =  self.reformat(wts, 0).transpose(0, 1)
+        wvecs1 =  self.reformat(wts, 1).transpose(0, 1)
 
         sum_dist = 0
         for wv0 in wvecs0:
@@ -151,7 +150,7 @@ class Debate(nn.Module):
                     dist = dist_
             sum_dist += dist
 
-        return sum_dist
+        return sum_dist*1.0/wvecs0.shape[0]
 
 
 
@@ -164,10 +163,11 @@ class Debate(nn.Module):
             x = x.cuda(); y = y.cuda()
         x = Variable(x); y = Variable(y)
 
+
         if not is_training:
             return self.forward_test(x, y, epoch)
 
-        z, qloss, w_ts, b_ts, log_pis, h_t = self.step(x)
+        z, qloss, cbvar, dis, hsw, r = self.fext(x)
 
         # Judge prediction
         with torch.no_grad():
@@ -176,10 +176,16 @@ class Debate(nn.Module):
 
         # quantized distillation
         self.quantized_optimizer.zero_grad()
-        cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z, (1,1)).flatten())
+        cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z, (1,1)).squeeze())
         cq_loss = F.nll_loss(cqlog_probs, jpred)
+        cq_loss = cq_loss + qloss
         cq_loss.backward()
         self.quantized_optimizer.step()
+
+
+
+        w_ts, b_ts, log_pis, h_t = self.step(z.detach().clone())
+
 
         # TODO: include accurracy metric...
 
@@ -220,13 +226,13 @@ class Debate(nn.Module):
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(wvecs)
+            intra_loss = self.HLoss(wvecs) # not updating policy newtork, which we need it to update
+            
             regularization_loss = intra_loss - inter_dis
-            loss_classifier += qloss
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      loss_classifier + regularization_loss
 
-
+            # print (loss, loss_reinforce, loss_baseline, loss_classifier, regularization_loss)
 
             correct = (preds_agent == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -256,11 +262,14 @@ class Debate(nn.Module):
         # baselines:        (batch*M, num_glimpses)
         # log_pi:           (batch*M, num_glimpses)
         # log_probas:       (batch*M, num_class)
-        z, qloss, w_ts, b_ts, log_pis, h_t = self.step(x)
+        z, qloss, cbvar, dis, hsw, r = self.fext(x)
+        w_ts, b_ts, log_pis, h_t = self.step(z)
+        z = z.contiguous().view((self.M, x_orig.shape[0]) + z.shape[1:])
+        z = torch.mean(z, dim = 0)
 
 
         # Judge prediction
-        jpred = torch.max(self.judge(x), 1)[1].detach()
+        jpred = torch.max(self.judge(x_orig), 1)[1].detach()
 
         logs = {}
         inter_dis = self.interDis(w_ts)
@@ -270,7 +279,10 @@ class Debate(nn.Module):
             log_pi = self.reformat(log_pis, ai)
 
 
-            # Average           
+            # Average     
+            wvecs = wvecs.contiguous().view((self.M, x_orig.shape[0]) + wvecs.shape[1:])
+            wvecs = torch.mean(wvecs, dim = 0)
+             
             log_probs_agent = agent.classifier(h_t[ai][0])
             log_probs_agent = log_probs_agent.contiguous().view(self.M, -1, log_probs_agent.shape[-1])
             log_probs_agent = torch.mean(log_probs_agent, dim=0)
@@ -294,7 +306,7 @@ class Debate(nn.Module):
             # reward:   (batch)
             log_probs = log_probs_agent
             log_probs = F.softmax(log_probs).detach()
-            reward = self.reward_fns[ai](log_probs, jpred)
+            reward = self.reward_fns[ai](z, wvecs, log_probs, jpred)
 
             # Baseline Loss
             # reward:          (batch, num_glimpses)
@@ -312,7 +324,6 @@ class Debate(nn.Module):
             # sum up into a hybrid loss
             intra_loss = self.HLoss(wvecs)
             regularization_loss = intra_loss - inter_dis
-            classifier_loss += qloss
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      classifier_loss + regularization_loss
 

@@ -6,8 +6,8 @@ from src.Classifier import model
 
 model_urls = {
     'stl10': '/vol/biomedic2/agk21/PhDLogs/codes/pytorch-playground/stl10/log/default/best.pth',
-    'mnist': '/vol/biomedic2/agk21/PhDLogs/codes/stylEX-extention/Classifier/Logs/MNIST/best.pth',
-    'afhq': '/vol/biomedic2/agk21/PhDLogs/codes/stylEX-extention/Classifier/Logs/AFHQ/best.pth'
+    'mnist': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/MNIST/best.pth',
+    'afhq': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/AFHQ/best.pth'
 }
 
 class SVHN(nn.Module):

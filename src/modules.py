@@ -81,11 +81,9 @@ class VectorQuantizer2DHS(nn.Module):
         self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
 
 
-        self.hsreg = lambda x: [ torch.norm(x[i]) for i in range(x.shape[0])]
-        self.r = torch.nn.Parameter(torch.ones(self.n_e))
-        if self.use_gpu:
-            self.r = self.r.cuda()
-        self.ed = lambda x: [torch.norm(x[i]) for i in range(x.shape[0])]
+        self.hsreg = lambda x: torch.cat([ torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
+        self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.embedding.weight.device)
+        self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
         
 
         # remap
@@ -115,9 +113,9 @@ class VectorQuantizer2DHS(nn.Module):
         new = match.argmax(-1)
         unknown = match.sum(2)<1
         if self.unknown_index == "random":
-            r = torch.randint(0,self.re_embed,size=new[unknown].shape)
+            r = torch.randint(0, self.re_embed,size=new[unknown].shape)
             if self.use_gpu:
-                r = r.cuda()
+                r.cuda()
 
             new[unknown] = r
         else:
@@ -156,7 +154,6 @@ class VectorQuantizer2DHS(nn.Module):
         ed1 = ed1.repeat(self.n_e, 1)
         ed2 = ed1.transpose(0,1)
         ed3 = ed1 * ed2
-
         edx = d1/ed3
         if self.use_gpu: edx = edx.cuda()
         edx = torch.clamp(edx, min=-0.99999, max=0.99999)
@@ -177,9 +174,7 @@ class VectorQuantizer2DHS(nn.Module):
 
         z_q = self.embedding(min_encoding_indices).view(z.shape)
 
-        hsw = torch.Tensor(self.hsreg(self.embedding.weight))
-        if self.use_gpu:
-            hsw = hsw.cuda()
+        hsw = self.hsreg(self.embedding.weight)
         hsw = torch.mean(torch.square(self.r - hsw))
 
         # compute loss for embedding
@@ -365,7 +360,7 @@ class ActionNet(nn.Module):
         @param input_size: input size of the fc layer.
         @param output_size: output size of the fc layer.
         """
-        super(PolicyNet, self).__init__()
+        super(ActionNet, self).__init__()
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
@@ -374,6 +369,7 @@ class ActionNet(nn.Module):
         @param h_t: (batch, rnn_hidden)
         @return a_t: (batch, output_size)
         """
+        h_t = F.relu6(h_t)
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
@@ -398,9 +394,9 @@ class PolicyNet(nn.Module):
     def forward(self, z, w0, w1, h_t):
 
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-        z1 = F.relu(self.fc1(z*w0))
-        z2 = F.relu(self.fc2(z*w1))
-        z3 = F.tanh(self.fc3(h_t))
+        z1 = F.relu6(self.fc1(z*w0))
+        z2 = F.relu6(self.fc2(z*w1))
+        z3 = F.relu6(self.fc3(h_t))
 
         logits = self.combine(torch.cat((z1, z2, z3), dim=1))
         return F.softmax(logits)
@@ -421,7 +417,7 @@ class ModulatorNet(nn.Module):
     def forward(self, z, w):
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
         z = z*w # attention
-        return self.fc(z)
+        return F.relu6(self.fc(z))
 
 
 class BaselineNet(nn.Module):
@@ -463,11 +459,11 @@ class PlayerNet(nn.Module):
         self.rnn = core_network(args.rnn_input_size, 
                                     args.rnn_hidden, 
                                     args.use_gpu)
-        self.modulator_net = ModulatorNet(args.n_symbols,
+        self.modulator_net = ModulatorNet(args.nfeatures,
                                         args.rnn_input_size,
                                         args.use_gpu)
-        self.policy_net = PolicyNet(args.n_symbols,
-                                        args.n_symbols,
+        self.policy_net = PolicyNet(args.nfeatures,
+                                        args.nfeatures,
                                         args.rnn_hidden, 
                                         args.use_gpu)
 
@@ -485,13 +481,13 @@ class PlayerNet(nn.Module):
         @param x: image. (batch, channel, height, width)
         @param l_t:
         """
-        w_current = self.policy_net(z, w0, w1, h_t)
+        w_current = self.policy_net(z, w0, w1, h_t[0])
         z_current = self.modulator_net(z, w_current)
         h_t = self.rnn(z_current, h_t)
 
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        log_pi = torch.log(w_current)
+        log_pi = torch.log(0.001 + w_current)
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
         log_pi = log_pi.sum(dim=1)
 
