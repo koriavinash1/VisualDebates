@@ -32,7 +32,7 @@ def parse_args():
 
     # codebook params
     vq_network_arg = parser.add_argument_group('vector quantizer Params')
-    vq_network_arg.add_argument('--nconcepts', type=int, default=512, help='total number of discrete symbols in a codebook')
+    vq_network_arg.add_argument('--nconcepts', type=int, default=32, help='total number of discrete symbols in a codebook')
     vq_network_arg.add_argument('--nfeatures', type=int, default=64, help='total number of sampled discrete symbols for every image')
     vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
     vq_network_arg.add_argument('--beta', type=float, default=0.9, help='component of quantization loss')

@@ -109,8 +109,7 @@ class Debate(nn.Module):
                 
                 if len(args_t_const) > 0:
                     args_t_const = torch.cat([arg_.unsqueeze(1) for arg_ in args_t_const], dim=1) # batch_size, nagents -1, ...
-                    args_t_const = args_t_const.squeeze()
-                    args_t_const.requires_grad = False
+                    args_t_const = args_t_const.squeeze().detach()
 
 
                 hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
@@ -164,9 +163,9 @@ class Debate(nn.Module):
             dist = 1000
             for wv1 in dist1:
                 if ai == 0:
-                    dist_ = torch.norm(wv0 - wv1.detach())
+                    dist_ = F.kl_div(F.log_softmax(wv0), wv1.detach())
                 else:
-                    dist_ = torch.norm(wv0.detach() - wv1)
+                    dist_ = F.kl_div(wv0.detach(), F.log_softmax(wv1))
                 if dist_ < dist:
                     dist = dist_
             sum_dist += dist
@@ -203,9 +202,13 @@ class Debate(nn.Module):
         cq_loss.backward()
         self.quantized_optimizer.step()
 
+        cq_preds = torch.max(cqlog_probs, 1)[1]
+        cq_correct = (cq_preds == jpred).float()
+        cq_acc = 100 * (cq_correct.sum() / len(y))
 
 
-        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z.detach().clone())
+
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
 
 
         # TODO: include accurracy metric...
@@ -249,9 +252,9 @@ class Debate(nn.Module):
             intra_loss = self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
             
-            regularization_loss = -1*(intra_loss + inter_dis)
+            regularization_loss = 0 #-1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     loss_classifier + regularization_loss
+                     loss_classifier + 0.001*regularization_loss
 
             correct = (preds_agent == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -265,11 +268,14 @@ class Debate(nn.Module):
             logs[ai]['z'] = z
             logs[ai]['y'] = y
             logs[ai]['acc'] = acc
+            logs[ai]['cqacc'] = cq_acc
             logs[ai]['loss'] = loss
             logs[ai]['jpred'] = jpred
             logs[ai]['z_idx'] = symbol_idxs
             logs[ai]['preds'] = preds_agent
             logs[ai]['arguments'] = args_idx
+            logs[ai]['argument_dist'] = args_dist
+
 
         return logs
 
@@ -288,9 +294,9 @@ class Debate(nn.Module):
 
 
 
-        z, sampled_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+        z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
         args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
-        z = z[0]; sampled_idxs = sampled_idxs[0]
+        z = z[0]; symbol_idxs = symbol_idxs[0]
 
 
         # Judge prediction
@@ -350,9 +356,9 @@ class Debate(nn.Module):
             intra_loss = self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
 
-            regularization_loss = -1*(intra_loss + inter_dis)
+            regularization_loss = 0 #-1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     classifier_loss + regularization_loss
+                     classifier_loss + 0.001*regularization_loss
 
 
              # calculate accuracy
@@ -371,6 +377,7 @@ class Debate(nn.Module):
             logs[ai]['z_idx'] = symbol_idxs
             logs[ai]['preds'] = preds_agent
             logs[ai]['arguments'] = args_idx
+            logs[ai]['argument_dist'] = args_dist
             logs[ai]['con_mat'] = self.confusion_meters[ai]
 
         return logs

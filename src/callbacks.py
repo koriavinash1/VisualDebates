@@ -43,13 +43,14 @@ class PlotCbk(Callback):
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
     
-    def plot(self, imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, name):
+    def plot(self, imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, name):
         if ((epoch % self.plot_freq == 0) and (batch_ind == 0)) or (epoch == -1):
             if self.use_gpu:
-                imgs = imgs.cpu()
-                zs = zs.cpu() 
+                imgs = imgs.detach().cpu()
+                zs = zs.detach().cpu() 
                 zs_idx = zs_idx.cpu()
                 arguments = arguments.cpu()
+                arguments_dist = argument_dist.detach().cpu()
                 preds = preds.cpu()
                 jpreds = jpreds.cpu()
                 Ys = Ys.cpu()
@@ -61,6 +62,7 @@ class PlotCbk(Callback):
                     zs = zs.numpy(), 
                     zs_idx = zs_idx.numpy(),
                     arguments = arguments.numpy(),
+                    arguments_dist = arguments_dist.numpy(),
                     preds = preds.numpy(),
                     jpreds = jpreds.numpy(),
                     Ys = Ys.numpy()    
@@ -79,19 +81,21 @@ class PlotCbk(Callback):
                 zs = logs[key]['z'][:self.num_imgs]
                 zs_idx = logs[key]['z_idx'][:self.num_imgs]
                 arguments = logs[key]['arguments'][:self.num_imgs]
+                argument_dist = logs[key]['argument_dist'][:self.num_imgs]
                 preds = logs[key]['preds'][:self.num_imgs] 
                 jpreds = logs[key]['jpred'][:self.num_imgs]
                 Ys = logs[key]['y'][:self.num_imgs]
-                self.plot(imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, str(key) + '_' +name)
+                self.plot(imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, str(key) + '_' +name)
         else:
             imgs = logs['x'][:self.num_imgs]
             zs = logs['z'][:self.num_imgs]
             zs_idx = logs['z_idx'][:self.num_imgs]
             arguments = logs['arguments'][:self.num_imgs]
+            argument_dist = logs['argument_dist'][:self.num_imgs]
             preds = logs['preds'][:self.num_imgs] 
             jpreds = logs['jpred'][:self.num_imgs] 
             Ys = logs['y'][:self.num_imgs]
-            self.plot(imgs, zs, zs_idx, arguments, preds, jpreds, Ys, epoch, batch_ind, name)
+            self.plot(imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, name)
 
 
 class TensorBoard(Callback):

@@ -39,7 +39,7 @@ class RecurrentAttentionAgent(nn.Module):
     def __init_optimizer(self, lr=1e-3, weight_decay = 1e-5):
         print("LearningRate: ", lr)
         self.optimizer = torch.optim.Adam (self.parameters(), 
-                            lr=lr, 
+                            lr=3*lr, 
                             weight_decay=weight_decay)
 
     def forwardStep(self, x, arg_agent, arg_other, h_t):
