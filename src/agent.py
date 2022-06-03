@@ -31,7 +31,8 @@ class RecurrentAttentionAgent(nn.Module):
         arg_0 = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
         arg_0 = Variable(arg_0).type(dtype)
         arg_0 = F.softmax(arg_0)
-        return torch.argmax(arg_0, 1)
+        # return torch.argmax(arg_0, 1)
+        return arg_0
     
     def init_rnn_hidden(self, batch_size):
         return self.ram_net.rnn.init_hidden(batch_size)
@@ -39,7 +40,7 @@ class RecurrentAttentionAgent(nn.Module):
     def __init_optimizer(self, lr=1e-3, weight_decay = 1e-5):
         print("LearningRate: ", lr)
         self.optimizer = torch.optim.Adam (self.parameters(), 
-                            lr=3*lr, 
+                            lr=lr, 
                             weight_decay=weight_decay)
 
     def forwardStep(self, x, arg_agent, arg_other, h_t):

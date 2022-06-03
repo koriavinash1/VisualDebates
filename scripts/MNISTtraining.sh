@@ -4,7 +4,7 @@ python ../main.py \
         --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/Agent-debates/LogsS/MNIST/debate/plots \
         --img_size=32 \
         --epoch=35 \
-        --batch_size=64 \
+        --batch_size=32 \
         --device=0 \
         --print_freq=500 \
         --plot_freq=50 \

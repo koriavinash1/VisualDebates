@@ -386,12 +386,13 @@ class PolicyNet(nn.Module):
         @param std: standard deviation of the normal distribution.
         """
         super(PolicyNet, self).__init__()
-        self.fc1 = nn.Linear(concept_size, output_size//2)
-        self.fc2 = nn.Linear(concept_size, output_size//2)
+        self.fc1 = nn.Linear(input_size, output_size//2)
+        self.fc2 = nn.Linear(input_size, output_size//2)
+
         self.fc3 = nn.Linear (hidden_size, output_size//2)
         # self.fc4 = nn.Linear (input_size, output_size//2)
 
-        self.combine = nn.Linear(output_size//2, output_size)
+        self.combine = nn.Linear(3*output_size//2, output_size)
 
         if use_gpu:
             self.cuda()
@@ -399,20 +400,26 @@ class PolicyNet(nn.Module):
     def forward(self, z,  arg1, arg2, h):
         
         batch_size = z.shape[0]
-        # z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
+        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
 
         # z_info = F.relu6(self.fc4(z))
-        arg1_info = F.relu6(self.fc1(arg1.view(batch_size, -1)))
-        arg2_info = F.relu6(self.fc2(arg2.view(batch_size, -1)))
+        # arg1 = arg1.view(batch_size, -1)
+        # arg2 = arg2.view(batch_size, -1)
+
+        # print (arg1.shape, arg2.shape, z.shape)
+        arg1 = z*arg1
+        arg2 = z*arg2
+
+        arg1_info = F.relu6(self.fc1(arg1))
+        arg2_info = F.relu6(self.fc2(arg2))
         history = F.relu6(self.fc3(h))
 
-        # logits = self.combine(torch.cat((z_info, 
-        #                                     arg1_info, 
-        #                                     arg2_info, 
-        #                                     history), dim=1))
-        logits = self.combine(arg1_info + 
-                                arg2_info + 
-                                history)
+        logits = self.combine(torch.cat((arg1_info, 
+                                            arg2_info, 
+                                            history), dim=1))
+        # logits = self.combine(arg1_info + 
+        #                         arg2_info + 
+        #                         history)
         return F.softmax(logits)
 
 
@@ -424,24 +431,27 @@ class ModulatorNet(nn.Module):
         @param output_size: output size of the fc layer, hidden vector dimension.
         """
         super(ModulatorNet, self).__init__()
-        self.fc = nn.Linear(concept_size, output_size)
-        # self.fc2 = nn.Linear (input_size, output_size)
+        # self.fc = nn.Linear(concept_size, output_size)
+        self.fc = nn.Linear (input_size, output_size)
 
         self.final = nn.Linear (output_size, output_size)
 
         if use_gpu:
             self.cuda()
 
-    def forward(self, z, arg_idx):
+    def forward(self, z, arg):
         batch_size = z.shape[0]
+        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
 
-        arg = torch.cat([z[i, _idx_].unsqueeze(0) \
-                        for i, _idx_ in enumerate(arg_idx.detach())], 0)
-        arg_info = F.relu6(self.fc(arg.view(batch_size, -1)))
 
-        # z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
+        # arg = torch.cat([z[i, _idx_].unsqueeze(0) \
+        #                 for i, _idx_ in enumerate(arg.detach())], 0)
+        # arg = arg.view(batch_size, -1)
+
+        arg = arg*z
+        arg_info = F.relu6(self.fc(arg))
+
         # z_info = F.relu6(self.fc2(z))
-
         # return F.relu6(self.final(arg_info + z_info))
         return F.relu6(self.final(arg_info))
 
@@ -513,15 +523,17 @@ class PlayerNet(nn.Module):
         """
 
         argument_prob = self.policy_net(z, arg1_t, arg2_t, h_t[0])
-        argument_dist = Categorical(argument_prob)
-        arg_current = argument_dist.sample()
+        arg_current = argument_prob.detach().clone()
+        # argument_dist = Categorical(argument_prob)
+        # arg_current = argument_dist.sample()
 
+        # log_pi = argument_dist.log_prob(arg_current)
         z_current = self.modulator_net(z, arg_current)
         h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        log_pi = argument_dist.log_prob(arg_current)
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
-        # log_pi = log_pi.sum(dim=1)
+        log_pi = torch.log(0.001 + argument_prob)
+        log_pi = log_pi.sum(dim=1)
 
-        return h_t, arg_current, b_t, log_pi, argument_dist
+        return h_t, arg_current, b_t, log_pi, argument_prob

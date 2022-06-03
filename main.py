@@ -22,7 +22,7 @@ def parse_args():
     import sys
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--name', type=str, default='test', help='Name of an exp')
-    parser.add_argument('--M', type=float, default=10, help='Monte Carlo sampling for valid and test sets')
+    parser.add_argument('--M', type=float, default=5, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
@@ -292,9 +292,11 @@ if __name__ == '__main__':
             reward = -(pred == y).float()
 
         return args.reward_weightage*reward + cummilative_AS
+
+        
     
-    reward_fns = [lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y),
-                    lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y, True),]
+    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y),
+                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True),]
     model.reward_fns = reward_fns
 
 

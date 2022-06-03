@@ -101,16 +101,20 @@ class Debate(nn.Module):
                 args_idx_t_const = copy.deepcopy(args_idx_t[t-1])
 
                 # mapping idx to args---------------------
-                args_t_const = [torch.cat([z[i, _idx_, ...].unsqueeze(0) \
-                                for i, _idx_ in enumerate(idx_)], 0) \
-                                for idx_ in args_idx_t_const]
+                # args_t_const = [torch.cat([z[i, _idx_, ...].unsqueeze(0) \
+                #                 for i, _idx_ in enumerate(idx_)], 0) \
+                #                 for idx_ in args_idx_t_const]
+                
+                args_t_const = args_idx_t_const
                 args_t_agent = args_t_const[ai]
                 del args_t_const[ai]
                 
+                # print ("*******=======", args_t_agent.shape, args_t_const[0].shape)
                 if len(args_t_const) > 0:
                     args_t_const = torch.cat([arg_.unsqueeze(1) for arg_ in args_t_const], dim=1) # batch_size, nagents -1, ...
                     args_t_const = args_t_const.squeeze().detach()
 
+                # print ("*******", args_t_agent.shape, args_t_const[0].shape)
 
                 hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
                                                             args_t_agent, 
@@ -136,8 +140,10 @@ class Debate(nn.Module):
         """
         agents_data = []
         for t in range(self.narguments):
-            if not dist: agents_data.append(x[t][ai].unsqueeze(0))
-            else: agents_data.append(x[t][ai].probs.unsqueeze(0))
+            # if not dist: agents_data.append(x[t][ai].unsqueeze(0))
+            # else: agents_data.append(x[t][ai].probs.unsqueeze(0))
+
+            agents_data.append(x[t][ai].unsqueeze(0))
 
         agent_data = torch.cat(agents_data, dim=0)
         return torch.transpose(agent_data, 0, 1)
@@ -207,13 +213,7 @@ class Debate(nn.Module):
         cq_acc = 100 * (cq_correct.sum() / len(y))
 
 
-
         args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
-
-
-        # TODO: include accurracy metric...
-
-
 
         # individual agent optimizer
         logs = {}
@@ -252,7 +252,7 @@ class Debate(nn.Module):
             intra_loss = self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
             
-            regularization_loss = 0 #-1*(intra_loss + inter_dis)
+            regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      10*loss_classifier + 0.001*regularization_loss
 
@@ -356,7 +356,7 @@ class Debate(nn.Module):
             intra_loss = self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
 
-            regularization_loss = 0 #-1*(intra_loss + inter_dis)
+            regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      10*classifier_loss + 0.001*regularization_loss
 
