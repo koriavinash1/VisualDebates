@@ -178,9 +178,9 @@ if __name__ == '__main__':
     # build Debate model
     model = Debate(args)
     manipulator_prob = 0.6
-    EPS = 1e-3
 
     def get_reward(z, sampled_idx, arguments, logits, y, attacker=False):
+        EPS = 1e-3
         pred = torch.max(logits, dim=1)[0]
         rand_prob = np.random.uniform(0,1)
 
@@ -191,8 +191,12 @@ if __name__ == '__main__':
         def get_AS(z, arg):
             orig_score = model.quantized_classifier(z)
 
-            z_pertub = z.clone()
-            z_pertub[sampled_idx == arg] = 0
+            z_pertub = []
+            for i, z_ in enumerate(z.clone()):
+                z_[sampled_idx[i] == arg[i]] = 0
+                z_pertub.append(z_.unsqueeze(0))
+
+            z_pertub = torch.cat(z_pertub, 0)
             perturbed_score = model.quantized_classifier(z_pertub)
 
             delta =  torch.abs(orig_score - perturbed_score)
@@ -212,7 +216,7 @@ if __name__ == '__main__':
 
         cummilative_AS = 0
         if args.contrastive:
-            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for w in wvecs.transpose(0, 1)], 0)
+            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for i, w in enumerate(arguments.transpose(0, 1))], 0)
             cummilative_AS = torch.sum(AS_scores, 0)
 
 
@@ -223,6 +227,71 @@ if __name__ == '__main__':
 
         return args.reward_weightage*reward + cummilative_AS
 
+
+    def get_rewardZEROSUM(z, sampled_idx, arguments, logits, y, attacker=False):
+        EPS = 0.25
+        arguments = [arguments[0].trasnspose(0,1), arguments[1].trasnspose(0,1)]
+
+        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
+        
+
+        @torch.no_grad()
+        def get_AS(z, arg1, arg2):
+            orig_score = model.quantized_classifier(z.unsqueeze(0))
+
+            z_pertub = []
+            for i, z_ in enumerate(z.clone()):
+                z_[sampled_idx[i] == arg1[i]] = 0
+                z_[sampled_idx[i] == arg2[i]] = 0
+                z_pertub.append(z_.unsqueeze(0))
+
+            z_pertub = torch.cat(z_pertub, 0)
+            perturbed_score = model.quantized_classifier(z_pertub.unsqueeze(0))
+
+            delta =  torch.abs(orig_score - perturbed_score)
+
+            # class specific prob difference
+            delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
+
+            rewards = -1*torch.ones_like(delta)
+            rewards[delta > EPS] = 1     
+
+
+            if attacker:
+                return rewards 
+            else:
+                return -rewards
+   
+
+        cummilative_AS = 0
+        if args.contrastive:
+            AS_scores = torch.cat([get_AS(z[i], w1, w2).unsqueeze(0) for i, (w1, w2) in enumerate(zip(*arguments))], 0)
+            cummilative_AS = torch.sum(AS_scores, 0)
+
+        # compute debate reward:===================
+        rand_prob = np.random.uniform(0,1)
+
+        z_pertub = z.clone()
+        z_pertub = []
+        for i, z_ in enumerate(z.clone()):
+            for i, (arg1, arg2) in enumerate(zip(*arguments)):
+                z_[sampled_idx[i] == arg1[i]] = 0
+                z_[sampled_idx[i] == arg2[i]] = 0
+            z_pertub.append(z_.unsqueeze(0))
+
+        z_pertub = torch.cat(z_pertub, 0)
+        debate_information = z - z_pertub
+
+        with torch.no_grad():
+            pred = model.quantized_classifier(debate_information)
+            pred = torch.max(pred, dim=1)[0]
+
+        if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
+            reward = (pred == y).float()
+        else:
+            reward = -(pred == y).float()
+
+        return args.reward_weightage*reward + cummilative_AS
     
     reward_fns = [lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y),
                     lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y, True),]

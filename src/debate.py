@@ -254,7 +254,7 @@ class Debate(nn.Module):
             
             regularization_loss = 0 #-1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     loss_classifier + 0.001*regularization_loss
+                     10*loss_classifier + 0.001*regularization_loss
 
             correct = (preds_agent == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -358,7 +358,7 @@ class Debate(nn.Module):
 
             regularization_loss = 0 #-1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     classifier_loss + 0.001*regularization_loss
+                     10*classifier_loss + 0.001*regularization_loss
 
 
              # calculate accuracy
