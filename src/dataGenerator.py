@@ -113,7 +113,7 @@ class DataGenerator(data.Dataset):
                                "Supported image extensions are: " + ",".join(IMG_EXTENSIONS)))
 
         self.root = root
-        self.imgs = imgs#[:500]
+        self.imgs = imgs #[:15000]
         self.classes = classes
         self.num_class = len(classes)
         self.num_channels = 3

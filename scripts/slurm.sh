@@ -15,8 +15,8 @@ echo $1, $2, $3, $4
 conda activate dscm
 
 if [ "$1" = "AFHQ" ]; then
-    ./AFHQtraining.sh $2 $3 $4 $5 $6 $7 $8 $9
+    ./AFHQtraining.sh $2 $3 $4 $5
 else
-    ./MNISTtraining.sh $2 $3 $4 $5 $6 $7 $8 $9
+    ./MNISTtraining.sh $2 $3 $4 $5
 fi
 EOT

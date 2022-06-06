@@ -1,49 +1,43 @@
-python ../main.py \
+python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/AFHQ/afhq \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/Agent-debates/LogsS/AFHQ/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/Agent-debates/LogsS/AFHQ/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/AFHQ/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/AFHQ/debate/plots \
         --img_size=128 \
-        --model=densenet121 \
-        --epoch=250 \
+        --epoch=150 \
         --batch_size=16 \
         --device=0 \
         --print_freq=50 \
-        --plot_freq=50 \
+        --plot_freq=3 \
         --n_class=3 \
-        --init_lr=5e-3 \
-        --patch_size=$1 \
-        --nagents=$2 \
-        --narguments=$3 \
-        --nglimpses=$4 \
-        --rnn_hidden=$5 \
-        --glimpse_hidden=$6 \
-        --loc_hidden=$7 \
-        --reward_weightage=$8
+        --nfeatures=1024\
+        --cdim=16 \
+        --init_lr=1e-3 \
+        --narguments=$1 \
+        --rnn_hidden=$2 \
+        --rnn_input_size=$3 \
+        --nconcepts=$4
 
 echo Debate Completed
 
-python ../main.py \
+python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/AFHQ/afhq \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/Agent-debates/LogsS/AFHQ/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/Agent-debates/LogsS/AFHQ/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/AFHQ/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/AFHQ/debate/plots \
         --img_size=128 \
-        --model=densenet121 \
-        --epoch=300 \
+        --epoch=200 \
         --batch_size=16 \
         --device=0 \
         --print_freq=50 \
-        --plot_freq=50 \
+        --plot_freq=3 \
         --n_class=3 \
-        --init_lr=5e-4 \
+        --init_lr=1e-5 \
         --contrastive=True \
         --resume=True \
-        --patch_size=$1 \
-        --nagents=$2 \
-        --narguments=$3 \
-        --nglimpses=$4 \
-        --rnn_hidden=$5 \
-        --glimpse_hidden=$6 \
-        --loc_hidden=$7 \
-        --reward_weightage=$8
+        --nfeatures=1024 \
+        --cdim=16 \
+        --narguments=$1 \
+        --rnn_hidden=$2 \
+        --rnn_input_size=$3 \
+        --nconcepts=$4
 
 echo Debate Completed

@@ -533,7 +533,7 @@ class PlayerNet(nn.Module):
         b_t = self.baseline_net(h_t[0]).squeeze()
 
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
-        log_pi = torch.log(0.001 + argument_prob)
+        log_pi = torch.log(torch.clip(0.0001 + argument_prob, 0.0, 1.0))
         log_pi = log_pi.sum(dim=1)
 
         return h_t, arg_current, b_t, log_pi, argument_prob

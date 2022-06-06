@@ -30,7 +30,7 @@ class Debate(nn.Module):
         self.contrastive = args.contrastive
         self.rl_weightage = args.rl_weightage
 
-        self.name = 'Exp-{}-Debate: {}_{}_{}_{}_{}_{}'.format(
+        self.name = 'Exp-{}-Debate:{}_{}_{}_{}_{}_{}'.format(
                                         args.name,
                                         args.rnn_type, 
                                         args.narguments, 
@@ -79,7 +79,6 @@ class Debate(nn.Module):
     def fext(self, x):
         z, loss, (onehot_symbols, symbol_idx), \
             cbvar,  tdis, hsw, r = self.discretizer(self.judge.features(x))
-        
         return z.detach(), symbol_idx, loss, cbvar, tdis, hsw, r
 
 
@@ -161,19 +160,23 @@ class Debate(nn.Module):
         """
         @param dists: list of list of categorical distribtuions
         """
-        dist0 =  self.reformat(dists, 0, True).transpose(0, 1)
-        dist1 =  self.reformat(dists, 1, True).transpose(0, 1)
+        dist0 =  torch.transpose(self.reformat(dists, 0, True), 0, 1)
+        dist1 =  torch.transpose(self.reformat(dists, 1, True), 0, 1)
 
         sum_dist = 0
-        for wv0 in dist0:
+        for arg0 in dist0:
+            arg0 = arg0 + 0.001
+
             dist = 1000
-            for wv1 in dist1:
-                if ai == 0:
-                    dist_ = F.kl_div(F.log_softmax(wv0), wv1.detach())
+            for arg1 in dist1:
+                arg1 = arg1 + 0.001
+
+                if ai == 0: 
+                    dist_ = torch.norm(F.log_softmax(arg0) - arg1.detach())
                 else:
-                    dist_ = F.kl_div(wv0.detach(), F.log_softmax(wv1))
-                if dist_ < dist:
-                    dist = dist_
+                    dist_ = torch.norm(arg0.detach() - F.log_softmax(arg1))
+
+                if dist_ < dist: dist = dist_
             sum_dist += dist
 
         return sum_dist*1.0/dist0.shape[0]
@@ -215,27 +218,34 @@ class Debate(nn.Module):
 
         args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
 
+
+        # zerosum-component:
+        arguments = [self.reformat(args_idx_t, 0), self.reformat(args_idx_t, 1)]
+        log_prob_agents = [self.agents[0].classifier(h_t[0][0]),
+                        self.agents[1].classifier(h_t[1][0])]
+        claims = [torch.argmax(log_prob_agents[0].detach(), 1), 
+                        torch.argmax(log_prob_agents[1].detach(), 1)]
+
         # individual agent optimizer
         logs = {}
 
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
-            args_idx =  self.reformat(args_idx_t, ai)
             args_dist = self.reformat(arg_dists_t, ai, True)
             log_pi = self.reformat(log_pis, ai)
 
 
             # Classifier Loss -> distillation loss
-            log_probs_agent = agent.classifier(h_t[ai][0])
-            preds_agent = torch.max(log_probs_agent, 1)[1]
+            log_probs_agent = log_prob_agents[ai]
+            # if self.contrastive:
+            #     loss_classifier = 0
+            # else:
             loss_classifier = F.nll_loss(log_probs_agent, jpred)
 
 
             # Baseline Loss
             # reward:          (batch, num_glimpses)
-            log_probs = F.softmax(log_probs_agent).detach()
-
-            reward = self.reward_fns[ai](z, symbol_idxs, args_idx, log_probs, jpred)
+            reward, dpred = self.reward_fns[ai](z, symbol_idxs, arguments, claims, jpred)
             reward = reward.unsqueeze(1).repeat(1, self.narguments)
             loss_baseline = F.mse_loss(baselines, reward)
 
@@ -254,10 +264,13 @@ class Debate(nn.Module):
             
             regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     10*loss_classifier + 0.001*regularization_loss
+                     loss_classifier + 0.001*regularization_loss
 
-            correct = (preds_agent == jpred).float()
+            correct = (claims[ai] == jpred).float()
             acc = 100 * (correct.sum() / len(y))
+
+            dcorrect = (dpred == jpred).float()
+            dacc = 100 * (dcorrect.sum() / len(y))
 
             agent.optStep(loss)
 
@@ -271,9 +284,11 @@ class Debate(nn.Module):
             logs[ai]['cqacc'] = cq_acc
             logs[ai]['loss'] = loss
             logs[ai]['jpred'] = jpred
+            logs[ai]['dpred'] = dpred
+            logs[ai]['dacc'] = dacc
             logs[ai]['z_idx'] = symbol_idxs
-            logs[ai]['preds'] = preds_agent
-            logs[ai]['arguments'] = args_idx
+            logs[ai]['preds'] = claims[ai]
+            logs[ai]['arguments'] = arguments[ai]
             logs[ai]['argument_dist'] = args_dist
 
 
@@ -296,31 +311,47 @@ class Debate(nn.Module):
 
         z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
         args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
-        z = z[0]; symbol_idxs = symbol_idxs[0]
+        z = z.contiguous().view((self.M, x_orig.shape[0]) + z.shape[1:])
+        z = z[0]
 
+        symbol_idxs = symbol_idxs.contiguous().view((self.M, x_orig.shape[0]) + symbol_idxs.shape[1:])
+        symbol_idxs = symbol_idxs[0]
 
         # Judge prediction
         jpred = torch.max(self.judge(x_orig), 1)[1].detach()
 
+
+        # zerosum-component:
+        arguments = [self.reformat(args_idx_t, 0), self.reformat(args_idx_t, 1)]
+        arguments[0] = arguments[0].contiguous().view((self.M, x_orig.shape[0]) + arguments[0].shape[1:])
+        arguments[0] = torch.mean(arguments[0], dim = 0)
+        
+        arguments[1] = arguments[1].contiguous().view((self.M, x_orig.shape[0]) + arguments[1].shape[1:])
+        arguments[1] = torch.mean(arguments[1], dim = 0)
+            
+
+
+        log_prob_agents = [self.agents[0].classifier(h_t[0][0]),
+                        self.agents[1].classifier(h_t[1][0])]
+        log_prob_agents = [log_prob_agents[0].contiguous().view(self.M, -1, 
+                                        log_prob_agents[0].shape[-1]),
+                            log_prob_agents[1].contiguous().view(self.M, -1, 
+                                        log_prob_agents[1].shape[-1])]
+        log_prob_agents = [torch.mean(log_prob_agents[0], dim=0),
+                            torch.mean(log_prob_agents[1], dim=0)]
+
+
+        claims = [torch.argmax(log_prob_agents[0].detach(), 1), 
+                        torch.argmax(log_prob_agents[1].detach(), 1)]
         logs = {}
 
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
-            args_idx =  self.reformat(args_idx_t, ai)
             args_dist = self.reformat(arg_dists_t, ai, True)
             log_pi = self.reformat(log_pis, ai)
 
 
             # Average     
-            args_idx = args_idx.contiguous().view((self.M, x_orig.shape[0]) + args_idx.shape[1:])
-            args_idx = torch.mode(args_idx, dim = 0) # index max voting for M montecarlo iterations
-             
-            log_probs_agent = agent.classifier(h_t[ai][0])
-            log_probs_agent = log_probs_agent.contiguous().view(self.M, -1, log_probs_agent.shape[-1])
-            log_probs_agent = torch.mean(log_probs_agent, dim=0)
-            preds_agent = torch.max(log_probs_agent, 1)[1]
-
-
             baselines = baselines.contiguous().view(self.M, -1, baselines.shape[-1])
             baselines = torch.mean(baselines, dim=0)
 
@@ -330,14 +361,16 @@ class Debate(nn.Module):
 
 
             # classifier loss -> distillation
-            classifier_loss = F.nll_loss(log_probs_agent, jpred)
+            # if self.contrastive:
+            #     loss_classifier = 0
+            # else:
+            loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
             
             
             # Prediction Loss & Reward
             # preds:    (batch)
             # reward:   (batch)
-            log_probs = F.softmax(log_probs_agent).detach()
-            reward = self.reward_fns[ai](z, symbol_idxs, args_idx, log_probs, jpred)
+            reward, dpred = self.reward_fns[ai](z, symbol_idxs, arguments, claims, jpred)
 
             # Baseline Loss
             # reward:          (batch, num_glimpses)
@@ -358,14 +391,17 @@ class Debate(nn.Module):
 
             regularization_loss = -1*(intra_loss + inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     10*classifier_loss + 0.001*regularization_loss
+                     loss_classifier + 0.001*regularization_loss
 
 
              # calculate accuracy
-            correct = (preds_agent == jpred).float()
+            correct = (claims[ai] == jpred).float()
             acc = 100 * (correct.sum() / len(y))
 
-            self.confusion_meters[ai].add(preds_agent.data.view(-1), jpred.data.view(-1))
+            dcorrect = (dpred == jpred).float()
+            dacc = 100 * (dcorrect.sum() / len(y))
+
+            self.confusion_meters[ai].add(claims[ai].data.view(-1), jpred.data.view(-1))
             
             logs[ai] = {}
             logs[ai]['x'] = x
@@ -374,9 +410,11 @@ class Debate(nn.Module):
             logs[ai]['acc'] = acc
             logs[ai]['loss'] = loss
             logs[ai]['jpred'] = jpred
+            logs[ai]['dpred'] = dpred
+            logs[ai]['dacc'] = dacc
             logs[ai]['z_idx'] = symbol_idxs
-            logs[ai]['preds'] = preds_agent
-            logs[ai]['arguments'] = args_idx
+            logs[ai]['preds'] = claims[ai]
+            logs[ai]['arguments'] = arguments[ai]
             logs[ai]['argument_dist'] = args_dist
             logs[ai]['con_mat'] = self.confusion_meters[ai]
 
@@ -396,6 +434,9 @@ class Debate(nn.Module):
         for ai, agent in enumerate(self.agents):
             agent.load_state_dict(ckpt[ai]['model_state_dict'])
             agent.optimizer.load_state_dict(ckpt[ai]['optim_state_dict'])
+
+        self.quantized_classifier.load_state_dict(ckpt['qclassifier_state_dict'])
+        self.quantized_optimizer.load_state_dict(ckpt['qclassifier_optim_state_dict'])
         return ckpt['epoch']
 
 
@@ -406,6 +447,8 @@ class Debate(nn.Module):
             state[ai]['model_state_dict'] = agent.state_dict()
             state[ai]['optim_state_dict'] = agent.optimizer.state_dict()
 
+        state['qclassifier_state_dict'] = self.quantized_classifier.state_dict()
+        state['qclassifier_optim_state_dict'] = self.quantized_optimizer.state_dict()
         return state
 
 

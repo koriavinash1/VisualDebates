@@ -66,7 +66,7 @@ def parse_args():
     train_arg.add_argument('--epochs', type=int, default=25, help='# of epochs to train for')
     train_arg.add_argument('--patience', type=int, default=5, help='Max # of epochs to wait for no validation improv')
     train_arg.add_argument('--momentum', type=float, default=0.5, help='Nesterov momentum value')
-    train_arg.add_argument('--init_lr', type=float, default=0.001, help='Initial learning rate value')
+    train_arg.add_argument('--init_lr', type=float, default=0.0002, help='Initial learning rate value')
     train_arg.add_argument('--min_lr', type=float, default=0.000001, help='Min learning rate value')
     train_arg.add_argument('--saturate_epoch', type=int, default=150, help='Epoch at which decayed lr will reach min_lr')
 
@@ -100,7 +100,7 @@ def parse_args():
     debate_arg.add_argument('--nagents', type=int, default=2, help='# of agents in debate')
     debate_arg.add_argument('--contrastive', type=bool, default=False, help='fine tune supporter models')
     debate_arg.add_argument('--reward_weightage', type=float, default=1, help='weightage for reward')
-    debate_arg.add_argument('--rl_weightage', type=float, default=0.5, help='weightage for rl loss terms')
+    debate_arg.add_argument('--rl_weightage', type=float, default=0.01, help='weightage for rl loss terms')
 
 
     # LocationNet params
@@ -179,6 +179,15 @@ if __name__ == '__main__':
     model = Debate(args)
     manipulator_prob = 0.6
 
+
+    # update_paths
+    args.ckpt_dir = os.path.join(args.ckpt_dir, model.name)
+    args.plot_dir = os.path.join(args.plot_dir, model.name)
+    os.makedirs(args.ckpt_dir, exist_ok=True)
+    os.makedirs(args.plot_dir, exist_ok=True)
+
+
+
     def get_reward(z, sampled_idx, arguments, logits, y, attacker=False):
         EPS = 1e-3
         pred = torch.max(logits, dim=1)[0]
@@ -216,7 +225,7 @@ if __name__ == '__main__':
 
         cummilative_AS = 0
         if args.contrastive:
-            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for i, w in enumerate(arguments.transpose(0, 1))], 0)
+            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for i, w in enumerate(torch.transpose(arguments, 0, 1))], 0)
             cummilative_AS = torch.sum(AS_scores, 0)
 
 
@@ -228,31 +237,34 @@ if __name__ == '__main__':
         return args.reward_weightage*reward + cummilative_AS
 
 
-    def get_rewardZEROSUM(z, sampled_idx, arguments, logits, y, attacker=False):
-        EPS = 0.25
-        arguments = [arguments[0].trasnspose(0,1), arguments[1].trasnspose(0,1)]
+    def get_rewardZEROSUM(z, sampled_idx, arguments, claims, y, attacker=False):
+        EPS = 0.05
+        arguments = [torch.transpose(arguments[0], 0,1), 
+                        torch.transpose(arguments[1], 0,1)]
 
         z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
         
 
         @torch.no_grad()
         def get_AS(z, arg1, arg2):
-            orig_score = model.quantized_classifier(z.unsqueeze(0))
-
+            orig_score = model.quantized_classifier(z)
             z_pertub = []
             for i, z_ in enumerate(z.clone()):
-                z_[sampled_idx[i] == arg1[i]] = 0
-                z_[sampled_idx[i] == arg2[i]] = 0
+                arg1_ = torch.argmax(arg1, 1)
+                arg2_ = torch.argmax(arg2, 1)
+
+                z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
+                z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
+
                 z_pertub.append(z_.unsqueeze(0))
 
             z_pertub = torch.cat(z_pertub, 0)
-            perturbed_score = model.quantized_classifier(z_pertub.unsqueeze(0))
+            perturbed_score = model.quantized_classifier(z_pertub)
 
             delta =  torch.abs(orig_score - perturbed_score)
 
             # class specific prob difference
             delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
-
             rewards = -1*torch.ones_like(delta)
             rewards[delta > EPS] = 1     
 
@@ -265,33 +277,63 @@ if __name__ == '__main__':
 
         cummilative_AS = 0
         if args.contrastive:
-            AS_scores = torch.cat([get_AS(z[i], w1, w2).unsqueeze(0) for i, (w1, w2) in enumerate(zip(*arguments))], 0)
+            AS_scores = torch.cat([get_AS(z, w1, w2).unsqueeze(0) for i, (w1, w2) in enumerate(zip(*arguments))], 0)
             cummilative_AS = torch.sum(AS_scores, 0)
 
         # compute debate reward:===================
         rand_prob = np.random.uniform(0,1)
 
-        z_pertub = z.clone()
-        z_pertub = []
-        for i, z_ in enumerate(z.clone()):
-            for i, (arg1, arg2) in enumerate(zip(*arguments)):
-                z_[sampled_idx[i] == arg1[i]] = 0
-                z_[sampled_idx[i] == arg2[i]] = 0
-            z_pertub.append(z_.unsqueeze(0))
+        if args.contrastive:
+            z_pertub = z.clone()
+            z_pertub = []
+            for i, z_ in enumerate(z.clone()):
+                for t, (arg1, arg2) in enumerate(zip(*arguments)):
+                    arg1_ = torch.argmax(arg1, 1)
+                    arg2_ = torch.argmax(arg2, 1)
 
-        z_pertub = torch.cat(z_pertub, 0)
-        debate_information = z - z_pertub
+                    z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
+                    z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
 
-        with torch.no_grad():
-            pred = model.quantized_classifier(debate_information)
-            pred = torch.max(pred, dim=1)[0]
+                z_pertub.append(z_.unsqueeze(0))
 
-        if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
-            reward = (pred == y).float()
+            z_pertub = torch.cat(z_pertub, 0)
+            debate_information = z - z_pertub
+            with torch.no_grad():
+                pred = model.quantized_classifier(debate_information)
+                pred = torch.argmax(pred, dim=1)
         else:
-            reward = -(pred == y).float()
+            pred = y
 
-        return args.reward_weightage*reward + cummilative_AS
+
+        # print (arg1_, arg1, z, z_pertub, pred)
+        # print ("================")
+
+        eq_idx = (claims[0] == claims[1]).float()
+        p1_idx = (pred == claims[0])
+        p2_idx = (pred == claims[1])
+
+        reward = torch.zeros_like(eq_idx)
+        if args.contrastive:
+            if (not attacker) or (rand_prob > manipulator_prob):
+                reward[p1_idx] = 1
+                reward[p2_idx] = -1
+            else:
+                reward[p2_idx] = 1
+                reward[p1_idx] = -1
+            reward *= eq_idx
+        else:
+            if not attacker:
+                reward[p1_idx] = 1
+            else:
+                reward[p2_idx] = 1
+            # reward *= (1-eq_idx)
+
+        # if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
+        #     reward = (pred == y).float()
+        # else:
+        #     reward = -(pred == y).float()
+
+        return args.reward_weightage*reward + cummilative_AS, pred
 
         
     
