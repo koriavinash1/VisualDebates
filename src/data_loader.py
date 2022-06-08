@@ -103,5 +103,5 @@ def get_test_loader(test_dataset,
     @return A test sample iterator.
     """
     data_loader = torchutils.DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+        test_dataset, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
     return data_loader

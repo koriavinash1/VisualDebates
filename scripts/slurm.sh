@@ -6,7 +6,7 @@ sbatch <<EOT
 #SBATCH -p gpus                    # Partition (queue) 
 #SBATCH --gres gpu:1               # gpu:n, where n = number of GPUs 
 #SBATCH --mem 32G                  # memory pool for all cores 
-#SBATCH --output=slurm.%N.%j.log   # Standard output and error loga
+#SBATCH --output=LogsS2-slurm.%N.%j.log   # Standard output and error loga
 
 echo $1, $2, $3, $4
 

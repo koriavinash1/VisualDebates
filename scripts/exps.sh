@@ -15,15 +15,15 @@
 
 
 
-./slurm.sh AFHQ 4 256 256 64
-./slurm.sh AFHQ 6 256 256 64
-./slurm.sh AFHQ 10 256 256 64
-./slurm.sh AFHQ 20 256 256 64
+./slurm.sh AFHQ 4 256 256 512
+./slurm.sh AFHQ 6 256 256 512
+./slurm.sh AFHQ 10 256 256 512
+./slurm.sh AFHQ 20 256 256 512
 
-./slurm.sh AFHQ 4 128 128 128
-./slurm.sh AFHQ 6 128 128 128
-./slurm.sh AFHQ 10 128 128 128
-./slurm.sh AFHQ 20 256 256 128
+./slurm.sh AFHQ 4 128 128 1024
+./slurm.sh AFHQ 6 128 128 1024
+./slurm.sh AFHQ 10 128 128 1024
+./slurm.sh AFHQ 20 256 256 1024
 
 ./slurm.sh AFHQ 4 128 128 256
 ./slurm.sh AFHQ 6 128 128 256

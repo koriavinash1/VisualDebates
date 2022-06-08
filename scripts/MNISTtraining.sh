@@ -1,13 +1,13 @@
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/MNIST \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/MNIST/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/MNIST/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS2/MNIST/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS2/MNIST/debate/plots \
         --img_size=32 \
         --epoch=50 \
         --batch_size=64 \
         --device=0 \
         --print_freq=50 \
-        --plot_freq=3 \
+        --plot_freq=1 \
         --n_class=10 \
         --init_lr=1e-3 \
         --narguments=$1 \
@@ -19,14 +19,14 @@ echo Support Pre-training Completed
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/MNIST \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/MNIST/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS/MNIST/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS2/MNIST/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS2/MNIST/debate/plots \
         --img_size=32 \
         --epoch=75 \
         --batch_size=64 \
         --device=0 \
         --print_freq=50 \
-        --plot_freq=3 \
+        --plot_freq=1 \
         --n_class=10 \
         --init_lr=1e-5 \
         --contrastive=True \

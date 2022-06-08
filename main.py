@@ -28,6 +28,7 @@ def parse_args():
     common_arg = parser.add_argument_group('GlimpseNet Params')
     common_arg.add_argument('--img_size', type=int, default=32, help='size of extracted patch at highest res')
     common_arg.add_argument('--narguments', type=int, default=6, help='# of glimpses, i.e. BPTT iterations')
+    common_arg.add_argument('--committed', type=bool, default=True, help='ablation for committed and non committed debates')
 
 
     # codebook params
@@ -92,7 +93,7 @@ def parse_args():
     misc_arg.add_argument('--resume', type=str2bool, default=False, help='Whether to resume training from checkpoint')
     misc_arg.add_argument('--print_freq', type=int, default=10, help='How frequently to print training details')
     misc_arg.add_argument('--plot_freq', type=int, default=1, help='How frequently to plot glimpses')
-    misc_arg.add_argument('--plot_num_imgs', type=int, default=4, help='How many imgs to plot glimpses animiation')
+    misc_arg.add_argument('--plot_num_imgs', type=int, default=-1, help='How many imgs to plot glimpses animiation')
     
 
     # debate parameters

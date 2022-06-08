@@ -4,6 +4,7 @@ import pickle
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
 
 import matplotlib.animation as animation
 
@@ -20,49 +21,68 @@ def parse_arguments():
                      help="Total number of agents in a debate")
     arg.add_argument("--name", type=str, default='plots', 
                     help='Name of the plots')
-    arg.add_argument('--patch_size', type=int, default=32, 
-                    help='size of extracted patch at highest res')
-    arg.add_argument('--glimpse_scale', type=int, default=2, 
-                    help='scale factor for glimpse')
-    arg.add_argument('--nglimpses', type=int, default=10, 
-                    help='# of arguments used in debate')
-
+    arg.add_argument("--only_properties", type=bool, default=False, 
+                    help='Only plot convergence and argument properties')
+    arg.add_argument("--threshold", type=float, default=0.25, 
+                    help='threhold value for extracting binary mask')
     return arg.parse_args()
 
+
 normalize = lambda x: np.uint8(255*(x - x.min())/(x.max() - x.min()))
+
+
+def get_arguments(x, z, arguments, threshold=0.25):
+    size = np.asarray(x.shape[1:-1])
+
+    return_arguments = [] #nargs x bs
+    for ai in range(arguments.shape[1]):
+        F = normalize(np.sum(z*arguments[ai], 1))
+        Ftilde = cv2.resize(F, size, cv2.INTER_AREA)
+        Bmask = Ftilde > threshold
+        return_arguments.append(Bmask*x)
+    return np.swapaxes(np.array(return_arguments), 0, 1) # bs x nargs
+
 
 def main_image(args):
     plot_dir = args.plot_dir
     epoch = args.epoch 
-
-    # grab useful params
-    patch_size = args.patch_size
-    glimpse_scale = args.glimpse_scale
-    num_patches = args.nglimpses
     
-    images = {}; locations = {}; predictions = {}
+    logs_data = {
+                'images': [],
+                'z': [],
+                'z_idx': [],
+                'jpred': [],
+                'labels': [],
+                'outcome': [],
+                'arguments': {},
+                'visual_arguments': {},
+                'predictions':{},
+            }
+
     for ai in range(args.nagents):
         name = str(ai) + '_' + args.name
         # read in pickle files
-        with open(os.path.join(plot_dir, "{}g_{}.p".format(name, epoch)), "rb") as f:
-            images[ai] = pickle.load(f)
-        with open(os.path.join(plot_dir, "{}l_{}.p".format(name, epoch)), "rb") as f:
-            locations[ai] = pickle.load(f)
-        with open(os.path.join(plot_dir, "{}Ys_{}.p".format(name, epoch)), "rb") as f:
-            labels = pickle.load(f)
-        with open(os.path.join(plot_dir, "{}preds_{}.p".format(name, epoch)), "rb") as f:
-            predictions[ai] = pickle.load(f)
-        with open(os.path.join(plot_dir, "{}jpreds_{}.p".format(name, epoch)), "rb") as f:
-            classifierPred = pickle.load(f)
-        with open(os.path.join(plot_dir, "{}dpreds_{}.p".format(name, epoch)), "rb") as f:
-            debate_outcome = pickle.load(f)
+        with open(os.path.join(plot_dir, "{}_logs_{}.p".format(name, epoch)), "rb") as f:
+            data = pickle.load(f)
+            logs_data['images'] = data['imgs'].transpose(0, 2, 3, 1)
+            logs_data['z'] = data['zs']
+            logs_data['z_idx'] = data['zs_idx']
+            logs_data['jpred'] = data['jpreds']
+            logs_data['outcome'] = data['dpreds']
+            logs_data['labels'] = data['Ys']
+            logs_data['arguments'][ai] = data['arguments']
+            logs_data['predictions'][ai] = data['preds']
+            
+        logs_data['visual_arguments'][ai] = get_arguments(logs_data['images'], 
+                                                            data['zs'],
+                                                            data['arguments'],
+                                                            args.threshold)
 
-    narguments = len(locations[0][0])
-    num_imgs = images[0].shape[0]
-    img_shape = np.asarray([images[0][0].shape[1:]])
+    narguments = len(logs_data['arguments'][0][0])
+    num_imgs = logs_data['images'][0].shape[0]
+    img_shape = np.asarray([logs_data['images'][0][0].shape[1:]])
     
     # denormalize coordinates
-    coords = {ai: [0.5 * ((l + 1.0) * img_shape) for l in locations[ai]] for ai in locations.keys()}
     nrows = args.nagents*num_imgs
     ncols = narguments + args.nagents
 
@@ -75,13 +95,14 @@ def main_image(args):
     # plot base image
     color = ['r', 'b', 'g', 'c', 'm', 'y']
     for imgidx in range(0, nrows, args.nagents):
-        title = 'Y:{}, CPred: {}, DOutcome:{}, '.format(labels[imgidx//args.nagents],
-                                    classifierPred[imgidx//args.nagents],
-                                    debate_outcome[imgidx//args.nagents])
-        if labels[imgidx//args.nagents] != classifierPred[imgidx//args.nagents]: continue
+        title = '$Y={}$, $\mathcal{J}(x)={}$, $Debate(x)={}$, '.format(logs_data['images'][imgidx],
+                                                                    logs_data['jpred'][imgidx],
+                                                                    logs_data['outcome'][imgidx])
+        if logs_data['labels'][imgidx] != logs_data['jpred'][imgidx]: continue
 
         for aidx in range(args.nagents):
-            title += 'P{}: {}, '.format(aidx+1, predictions[aidx][imgidx//args.nagents])
+            title += '$\mathcal{P}^{}(x)={}$, '.format(aidx+1, 
+                                            logs_data['predictions'][aidx][imgidx])
                                  
             for argidx in range(ncols):
                 if argidx == 0:
@@ -89,7 +110,7 @@ def main_image(args):
                                             loc=(imgidx, 0), 
                                             colspan=args.nagents,
                                             rowspan=args.nagents)
-                    ax.imshow(normalize(images[aidx][imgidx//args.nagents].transpose(1,2,0)),cmap='gray')
+                    ax.imshow(normalize(logs_data['images'][imgidx]),cmap='gray')
                     ax.get_xaxis().set_visible(False)
                     ax.get_yaxis().set_visible(False)
                     ax.set_title(title)
@@ -100,20 +121,12 @@ def main_image(args):
                     # print (imgidx, aidx, argidx, imgidx//args.nagents + aidx)
                     ax = plt.subplot2grid(shape=(nrows, ncols), 
                                             loc=(imgidx + aidx, argidx))
-                    ax.imshow(normalize(images[aidx][imgidx//args.nagents].transpose(1,2,0)),cmap='gray')
+
+                    ax.imshow(logs_data['visual_arguments'][aidx][imgidx, argidx],cmap='gray')
                     ax.get_xaxis().set_visible(False)
                     ax.get_yaxis().set_visible(False)
-                    ax.set_title('Player:{} Arg:{}'.format(aidx +1, argidx - args.nagents + 1))
+                    ax.set_title('$\mathcal{A}^{}_{}'.format(aidx +1, argidx - args.nagents + 1))
 
-                    c = coords[aidx][imgidx//args.nagents][argidx - args.nagents]
-
-                    for l in range(num_patches):
-                        rect = bounding_box(
-                            c[0], c[1], 
-                            patch_size*(glimpse_scale**l), 
-                            color[argidx - args.nagents]
-                            )
-                        ax.add_patch(rect)
     # save as png
     path = os.path.join(args.plot_dir, 'pngs/')
     path = os.path.join(path, 'epoch_{}.png'.format(epoch))

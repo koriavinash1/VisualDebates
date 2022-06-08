@@ -57,9 +57,9 @@ class Debate(nn.Module):
 
         print ("Judge Netwrok loaded...")
 
-        os.makedirs(args.ckpt_dir, exist_ok=True)
+        os.makedirs(os.path.join(args.ckpt_dir, self.name), exist_ok=True)
         json.dump(vars(args), 
-                open(os.path.join(args.ckpt_dir, 'args-{}.json'.format(self.name)), 'w'), 
+                open(os.path.join(os.path.join(args.ckpt_dir, self.name), 'args-{}.json'.format(self.name)), 'w'), 
                 indent=4)
 
 
@@ -237,10 +237,10 @@ class Debate(nn.Module):
 
             # Classifier Loss -> distillation loss
             log_probs_agent = log_prob_agents[ai]
-            # if self.contrastive:
-            #     loss_classifier = 0
-            # else:
-            loss_classifier = F.nll_loss(log_probs_agent, jpred)
+            if self.contrastive:
+                loss_classifier = 0
+            else:
+                loss_classifier = F.nll_loss(log_probs_agent, jpred)
 
 
             # Baseline Loss
@@ -361,10 +361,10 @@ class Debate(nn.Module):
 
 
             # classifier loss -> distillation
-            # if self.contrastive:
-            #     loss_classifier = 0
-            # else:
-            loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
+            if self.contrastive:
+                loss_classifier = 0
+            else:
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
             
             
             # Prediction Loss & Reward
