@@ -414,9 +414,9 @@ class PolicyNet(nn.Module):
         arg2_info = F.relu6(self.fc2(arg2))
         history = F.relu6(self.fc3(h))
 
-        logits = self.combine(torch.cat((arg1_info, 
+        logits = F.relu6(self.combine(torch.cat((arg1_info, 
                                             arg2_info, 
-                                            history), dim=1))
+                                            history), dim=1)))
         # logits = self.combine(arg1_info + 
         #                         arg2_info + 
         #                         history)
@@ -523,17 +523,21 @@ class PlayerNet(nn.Module):
         """
 
         argument_prob = self.policy_net(z, arg1_t, arg2_t, h_t[0])
-        arg_current = argument_prob.detach().clone()
-        # argument_dist = Categorical(argument_prob)
-        # arg_current = argument_dist.sample()
+        # arg_current = argument_prob.detach().clone()
+        argument_dist = Categorical(argument_prob)
+        arg_current = argument_dist.sample()
+
+        # Note: log(p_y*p_x) = log(p_y) + log(p_x)
+        # log_pi = torch.log(torch.clip(0.0001 + argument_prob, 0.0, 1.0))
+        # log_pi = log_pi.sum(dim=1)
+        log_pi = argument_dist.log_prob(arg_current)
+
+
+        arg_current = 1.0*F.one_hot(arg_current, num_classes=argument_prob.shape[-1])
 
         # log_pi = argument_dist.log_prob(arg_current)
         z_current = self.modulator_net(z, arg_current)
         h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()
-
-        # Note: log(p_y*p_x) = log(p_y) + log(p_x)
-        log_pi = torch.log(torch.clip(0.0001 + argument_prob, 0.0, 1.0))
-        log_pi = log_pi.sum(dim=1)
 
         return h_t, arg_current, b_t, log_pi, argument_prob

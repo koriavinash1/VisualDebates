@@ -291,6 +291,7 @@ if __name__ == '__main__':
                 for t, (arg1, arg2) in enumerate(zip(*arguments)):
                     arg1_ = torch.argmax(arg1, 1)
                     arg2_ = torch.argmax(arg2, 1)
+                    # print(arg1_, arg2_)
 
                     z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
                     z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
@@ -327,6 +328,8 @@ if __name__ == '__main__':
                 reward[p1_idx] = 1
             else:
                 reward[p2_idx] = 1
+
+            reward *= (args.narguments + 1)
             # reward *= (1-eq_idx)
 
         # if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):

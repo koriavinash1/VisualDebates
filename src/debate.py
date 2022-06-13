@@ -151,9 +151,8 @@ class Debate(nn.Module):
         """
         @param x: probability vector (probabilities of categorical disributions)
         """
-        x = x.reshape(x.shape[0], -1)
         b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
-        return torch.sum(b)
+        return torch.mean(b)
 
 
     def DDistance(self, dists, ai):
@@ -162,24 +161,30 @@ class Debate(nn.Module):
         """
         dist0 =  torch.transpose(self.reformat(dists, 0, True), 0, 1)
         dist1 =  torch.transpose(self.reformat(dists, 1, True), 0, 1)
+        
+        dist0tilde = torch.mean(dist0, 0)
+        dist1tilde = torch.mean(dist1, 0)
 
-        sum_dist = 0
-        for arg0 in dist0:
-            arg0 = arg0 + 0.001
+        if ai == 0: 
+            dist_ = torch.norm(dist0tilde - dist1tilde.detach(), 1)
+        else:
+            dist_ = torch.norm(dist0tilde.detach() - dist1tilde, 1)
 
-            dist = 1000
-            for arg1 in dist1:
-                arg1 = arg1 + 0.001
 
-                if ai == 0: 
-                    dist_ = torch.norm(F.log_softmax(arg0) - arg1.detach())
-                else:
-                    dist_ = torch.norm(arg0.detach() - F.log_softmax(arg1))
+        # sum_dist = 0
+        # for arg0 in dist0:
+        #     arg0 = arg0 + 0.001
 
-                if dist_ < dist: dist = dist_
-            sum_dist += dist
+        #     dist = 1000
+        #     for arg1 in dist1:
+        #         arg1 = arg1 + 0.001
 
-        return sum_dist*1.0/dist0.shape[0]
+
+        #         if dist_ < dist: dist = dist_
+        #     sum_dist += dist
+
+        distance = 0.1*torch.mean(dist_)
+        return distance
 
 
 
@@ -259,12 +264,18 @@ class Debate(nn.Module):
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(args_dist)
+            intra_loss = 0 #self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
             
-            regularization_loss = -1*(intra_loss + inter_dis)
+            if self.contrastive:
+                regularization_loss = -1*(intra_loss + inter_dis)
+            else:
+                regularization_loss = -1*(intra_loss - inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     loss_classifier + 0.001*regularization_loss
+                     loss_classifier + regularization_loss
+
+
+            # print (intra_loss, inter_dis, loss, loss_reinforce, loss_baseline, loss_classifier)
 
             correct = (claims[ai] == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -389,7 +400,10 @@ class Debate(nn.Module):
             intra_loss = self.HLoss(args_dist)
             inter_dis = self.DDistance(arg_dists_t, ai)
 
-            regularization_loss = -1*(intra_loss + inter_dis)
+            if self.contrastive:
+                regularization_loss = -1*(intra_loss + inter_dis)
+            else:
+                regularization_loss = -1*(intra_loss - inter_dis)
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      loss_classifier + 0.001*regularization_loss
 
