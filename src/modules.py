@@ -356,24 +356,48 @@ class core_network(nn.Module):
 
 
 
-class ActionNet(nn.Module):
-    def __init__(self, input_size, output_size):
+class PlayerClassifier(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
         """
         @param input_size: input size of the fc layer.
         @param output_size: output size of the fc layer.
         """
-        super(ActionNet, self).__init__()
-        self.fc = nn.Linear(input_size, output_size)
+        super(PlayerClassifier, self).__init__()
+        self.fc = nn.Linear(hidden_size, output_size)
+        self.fc1 = nn.Linear(input_size, output_size)
+        self.fc2 = nn.Linear(output_size, output_size)
 
-    def forward(self, h_t):
+    def forward(self, z, z_idx, arg, h_t):
         """
         Uses the last output of the decoder to output the final classification.
         @param h_t: (batch, rnn_hidden)
         @return a_t: (batch, output_size)
         """
-        h_t = F.relu6(h_t)
-        a_t = F.log_softmax(self.fc(h_t), dim=1)
+
+        # mask z
+        arg = torch.transpose(arg, 0, 1)
+        z_pertub = []
+
+        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
+        for i, z_ in enumerate(z.clone()):
+            for t, arg_ in enumerate(arg):
+                arg_ = torch.argmax(arg_, 1)
+                z_[z_idx[i] == z_idx[i][arg_[i]]] = 0
+            z_pertub.append(z_.unsqueeze(0))
+        z_pertub = torch.cat(z_pertub, 0)
+
+        z = z - z_pertub
+
+        #==================
+
+        h_t = F.relu6(self.fc(h_t))
+        zd = F.relu6(self.fc1(z))
+
+
+        f = F.relu6(self.fc2(h_t + zd))
+        a_t = F.log_softmax(f, dim=1)
         return a_t
+
 
 
 class PolicyNet(nn.Module):
@@ -482,6 +506,26 @@ class BaselineNet(nn.Module):
         return b_t
 
 
+class QClassifier(nn.Module):
+    def __init__(self, input_size, output_size):
+        """
+        @param input_size: input size of the fc layer.
+        @param output_size: output size of the fc layer.
+        """
+        super(QClassifier, self).__init__()
+        self.fc = nn.Linear(input_size, output_size)
+
+    def forward(self, h_t):
+        """
+        Uses the last output of the decoder to output the final classification.
+        @param h_t: (batch, rnn_hidden)
+        @return a_t: (batch, output_size)
+        """
+        h_t = F.relu6(self.fc(h_t))
+        a_t = F.log_softmax(h_t, dim=1)
+        return a_t
+
+
 
 
 class PlayerNet(nn.Module):
@@ -506,7 +550,7 @@ class PlayerNet(nn.Module):
                                     use_gpu = args.use_gpu)
 
 
-        self.classifier = ActionNet(args.rnn_hidden, args.num_class)
+        self.classifier = PlayerClassifier(args.nfeatures, args.rnn_hidden, args.num_class)
         self.baseline_net = BaselineNet(args.rnn_hidden, 1)
 
 

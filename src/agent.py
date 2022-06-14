@@ -30,7 +30,7 @@ class RecurrentAttentionAgent(nn.Module):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
         arg_0 = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
         arg_0 = Variable(arg_0).type(dtype)
-        arg_0 = F.softmax(arg_0)
+        arg_0 = F.softmax(arg_0, dim=1)
         # return torch.argmax(arg_0, 1)
         return arg_0
     
@@ -51,5 +51,5 @@ class RecurrentAttentionAgent(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-    def classifier(self, h):
-        return self.ram_net.classifier(h)
+    def classifier(self, *args):
+        return self.ram_net.classifier(*args)

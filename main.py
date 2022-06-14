@@ -132,7 +132,7 @@ if __name__ == '__main__':
     traintransformList = [
                     # transforms.RandomAffine(30, translate=(0.2, 0.2), scale=(0.7, 1.0), shear=0.0),
                     transforms.Resize(transResize),
-                    transforms.RandomHorizontalFlip(),
+                    # transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                     ]

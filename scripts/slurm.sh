@@ -8,7 +8,7 @@ sbatch <<EOT
 #SBATCH --mem 32G                  # memory pool for all cores 
 #SBATCH --output=LogsS2-slurm.%N.%j.log   # Standard output and error loga
 
-echo $1, $2, $3, $4
+echo $1, $2, $3, $4, $5
 
 # Source Virtual environment (conda)
 . /vol/biomedic2/agk21/anaconda3/etc/profile.d/conda.sh

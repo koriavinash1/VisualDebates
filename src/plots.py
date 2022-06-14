@@ -1,3 +1,4 @@
+from cProfile import label
 from inspect import ArgSpec
 import os
 import pickle
@@ -7,7 +8,7 @@ import matplotlib.pyplot as plt
 import cv2
 from scipy import stats
 import matplotlib.animation as animation
-
+from scipy.interpolate import interp1d
 from utils import bounding_box
 
 ## python3 plot_glimpses.py --plot_dir=./plots/ram_6_8x8_2_2/ --epoch=111  -- use this to run and save gif
@@ -52,21 +53,24 @@ def get_properties(pred, y, arguments):
         p2_class_arguments = __get_unique__(arguments[1][class_idx])
         # print("====================")
         # print (p1_class_arguments, p2_class_arguments)
-        total_unqiue = np.unique(list(p1_class_arguments) + list(p2_class_arguments)) - 1
-        zr_.append((1./len(total_unqiue)) * np.sum((p1_class_arguments != p2_class_arguments)*(p1_class_arguments > 0)*(p2_class_arguments > 0)))
-
-    # print (zr_)
+        total_unqiue = len(np.unique(list(p1_class_arguments) + list(p2_class_arguments))) - 1
+        d = (1./(total_unqiue*np.sum(class_idx))) * np.sum((p1_class_arguments != p2_class_arguments)*(p1_class_arguments > 0)*(p2_class_arguments > 0))
+        zr_.append(d)
     zr_ = np.mean(zr_)
    
    # AH calculation
     # import pdb; pdb.set_trace()
     # print (arguments[0].shape, "*******************")
-    ah_ = 0.5*(stats.entropy(arguments[0], axis=-1) + stats.entropy(arguments[1], axis=-1))
-    ah_ = 0.25*np.mean(ah_)
+    ah_ = 0.5*(np.var(arguments[0], axis=-1) + \
+                np.var(arguments[1], axis=-1))
 
    # AD calculation
-    ad_ = np.mean((np.mean(arguments[0], 1) - np.mean(arguments[1], 1))**2)**0.5
+    ad_ = np.mean((arguments[0] - arguments[1])**2, -1)**0.5
+    # print (ah_, ad_)
+    # import pdb;pdb.set_trace()
 
+    ah_ = np.mean(ah_)*10**5
+    ad_ = np.mean(ad_)*10**5
     # dacc
     dacc = np.sum(pred == y)*1.00/len(y)
     return zr_, ah_, ad_, dacc 
@@ -77,13 +81,13 @@ def get_arguments(x, z, arguments, threshold=0.25):
     size = np.asarray(x.shape[1:-1])
     return_arguments = [] #nargs x bs
     for ai in range(arguments.shape[1]):
-        idx = np.argmax(arguments[:, ai,:], 1) # None, None]
-        F = normalize(np.array([z[i, idx[i], ...] for i in range(z.shape[0])]))
-        Bmask = np.uint8(F > (threshold*255))
+        idx = np.array([np.random.choice(arguments.shape[-1], 1, p = arguments[ii, ai,:]) for ii in range(arguments.shape[0])])[:,0] # None, None]
+        F = np.array([normalize(z[i, idx[i], ...]) for i in range(z.shape[0])])
+        Bmask = F #np.uint8(F > (threshold*255))
         # import pdb; pdb.set_trace()
-        Bmask = np.array([cv2.resize(Fd, tuple(size), interpolation = cv2.INTER_NEAREST) for Fd in Bmask])
+        Bmask = np.array([cv2.resize(Fd, tuple(size), interpolation = cv2.INTER_CUBIC) for Fd in Bmask])
         # print (wts[0], F, threshold*255, Bmask, "=============================")
-        return_arguments.append(Bmask[...,None]*x)
+        return_arguments.append(Bmask[...,None])
 
     return_arguments = np.array(return_arguments)
     return np.swapaxes(return_arguments, 0, 1) # bs x nargs
@@ -117,8 +121,8 @@ def main_image(args, epoch, plot=False):
             logs_data['outcome'] = data['dpreds']
             logs_data['labels'] = data['Ys']
             logs_data['arguments'][ai] = data['arguments']
-            print("8888888888888888888888888888888888888888888888", logs_data['arguments'][ai].shape)
-            print (ai, (np.argmax(logs_data['arguments'][ai], -1)))
+            # print("8888888888888888888888888888888888888888888888", logs_data['arguments'][ai].shape)
+            # print (ai, (np.argmax(logs_data['arguments'][ai], -1)))
             logs_data['arg_dist'][ai] = data['arguments_dist']
             logs_data['predictions'][ai] = data['preds']
 
@@ -173,7 +177,8 @@ def main_image(args, epoch, plot=False):
                         ax = plt.subplot2grid(shape=(nrows, ncols), 
                                                 loc=(imgidx + aidx, argidx))
 
-                        ax.imshow(logs_data['visual_arguments'][aidx][imgidx, argidx - args.nagents],cmap='gray')
+                        ax.imshow(normalize(logs_data['images'][imgidx]), cmap='gray', alpha=0.5)
+                        ax.imshow(logs_data['visual_arguments'][aidx][imgidx, argidx - args.nagents], cmap='coolwarm', alpha=0.5)
                         ax.get_xaxis().set_visible(False)
                         ax.get_yaxis().set_visible(False)
                         ax.set_title('$\mathcal{{A}}^{}_{}$'.format(aidx +1, argidx - args.nagents + 1))
@@ -209,14 +214,37 @@ if __name__ == "__main__":
         accs.append(dacc_)
         epochs.append(epoch_)
 
-    ## compute ema and plotting 
+    normalize_plot = lambda x: (x - np.min(x))/(np.max(x) - np.min(x))
 
-    plt.plot(epochs, ZR, c='b')
-    plt.plot(epochs, AH, c='r')
-    plt.plot(epochs, AD, c='k')
-    plt.plot(epochs, accs, c='g')
+    def ma(a, n=4) :
+        ret = np.cumsum(a, dtype=float)
+        ret[n:] = ret[n:] - ret[:-n]
+        return (ret[n - 1:] / n)
+
+    ## compute ema and plotting 
+    xnew = np.linspace(0, max_epoch, num=100)
+    print (max(xnew))
+    zr_cubic = interp1d(epochs[:-3], ma(ZR), kind='cubic', fill_value="extrapolate")
+    ad_cubic = interp1d(epochs[:-3], ma(AD), kind='cubic', fill_value="extrapolate")
+    ah_cubic = interp1d(epochs[:-3], ma(AH), kind='cubic', fill_value="extrapolate")
+    acc_cubic = interp1d(epochs[:-3], ma(accs), kind='cubic', fill_value="extrapolate")
+
+
+    plt.clf()
+    n = 10
+    plt.plot(xnew[:-n], normalize_plot(zr_cubic(xnew))[:-n], c='b', label='$Z_R$')
+    plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='r', label ='$\mathcal{{AH}}$' )
+    plt.plot(xnew[:-n], normalize_plot(ad_cubic(xnew))[:-n], c='k', label = '$\mathcal{{AD}}$')
+    plt.plot(xnew[:-n], normalize_plot(acc_cubic(xnew))[:-n], c='g', label='Debate accuracy')
+    plt.axvline(x=25, color='orange', ls='--', label='Training mode')
+    plt.legend()
+    plt.xlabel('Training epochs')
+    plt.ylabel('Properties')
+
     # plt.plot(epochs, P1L, c='b-')
     # plt.plot(epochs, P2L, c='r-')
+
+
     path = os.path.join(os.path.dirname(args.plot_dir), 'logs.png')
     plt.savefig(path, bbox_inches='tight')
 
