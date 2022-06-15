@@ -389,7 +389,7 @@ class PlayerClassifier(nn.Module):
         z = z - z_pertub
 
         #==================
-
+        h_t = F.relu6(h_t)
         h_t = F.relu6(self.fc(h_t))
         zd = F.relu6(self.fc1(z))
 
@@ -401,7 +401,7 @@ class PlayerClassifier(nn.Module):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, concept_size, input_size, output_size, hidden_size, use_gpu):
+    def __init__(self, concept_size, input_size, output_size, hidden_size, nclasses, use_gpu):
         """
         @param input_size: total number of sampled symbols from a codebook.
         @param concept_size: dimension of an individual sampled symbol.
@@ -414,14 +414,15 @@ class PolicyNet(nn.Module):
         self.fc2 = nn.Linear(input_size, output_size//2)
 
         self.fc3 = nn.Linear (hidden_size, output_size//2)
-        # self.fc4 = nn.Linear (input_size, output_size//2)
 
-        self.combine = nn.Linear(3*output_size//2, output_size)
+        self.fc4 = nn.Linear(nclasses, output_size//2)
+
+        self.combine = nn.Linear(2*output_size, output_size)
 
         if use_gpu:
             self.cuda()
 
-    def forward(self, z,  arg1, arg2, h):
+    def forward(self, z,  y, arg1, arg2, h):
         
         batch_size = z.shape[0]
         z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
@@ -437,13 +438,13 @@ class PolicyNet(nn.Module):
         arg1_info = F.relu6(self.fc1(arg1))
         arg2_info = F.relu6(self.fc2(arg2))
         history = F.relu6(self.fc3(h))
+        decision_info = F.relu6(self.fc4(y))
 
         logits = F.relu6(self.combine(torch.cat((arg1_info, 
-                                            arg2_info, 
+                                            arg2_info,
+                                            decision_info, 
                                             history), dim=1)))
-        # logits = self.combine(arg1_info + 
-        #                         arg2_info + 
-        #                         history)
+
         return F.softmax(logits)
 
 
@@ -521,8 +522,8 @@ class QClassifier(nn.Module):
         @param h_t: (batch, rnn_hidden)
         @return a_t: (batch, output_size)
         """
-        h_t = F.relu6(self.fc(h_t))
-        a_t = F.log_softmax(h_t, dim=1)
+        h_t = F.relu6(h_t)
+        a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
 
@@ -547,6 +548,7 @@ class PlayerNet(nn.Module):
                                     input_size = args.nfeatures, 
                                     output_size = args.nfeatures, 
                                     hidden_size = args.rnn_hidden,
+                                    nclasses = args.n_class,
                                     use_gpu = args.use_gpu)
 
 
@@ -558,7 +560,7 @@ class PlayerNet(nn.Module):
             self.cuda()
 
 
-    def step(self, z, arg1_t, arg2_t, h_t):
+    def step(self, z, y, arg1_t, arg2_t, h_t):
         """
         @param z: image. (batch, channel, height, width)
         @param arg1_t:
@@ -566,7 +568,7 @@ class PlayerNet(nn.Module):
         @param h_t:
         """
 
-        argument_prob = self.policy_net(z, arg1_t, arg2_t, h_t[0])
+        argument_prob = self.policy_net(z, y, arg1_t, arg2_t, h_t[0])
         # arg_current = argument_prob.detach().clone()
         argument_dist = Categorical(argument_prob)
         arg_current = argument_dist.sample()

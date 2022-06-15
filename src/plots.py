@@ -5,7 +5,7 @@ import pickle
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2
+import cv2, copy
 from scipy import stats
 import matplotlib.animation as animation
 from scipy.interpolate import interp1d
@@ -24,7 +24,7 @@ def parse_arguments():
                     help='Name of the plots')
     arg.add_argument("--properties", type=bool, default=False, 
                     help='Only plot convergence and argument properties')
-    arg.add_argument("--threshold", type=float, default=0.85, 
+    arg.add_argument("--threshold", type=float, default=0.75, 
                     help='threhold value for extracting binary mask')
     return arg.parse_args()
 
@@ -77,16 +77,27 @@ def get_properties(pred, y, arguments):
 
 
 
-def get_arguments(x, z, arguments, threshold=0.25):
+def get_arguments(x, z, sampled_idx, arguments, threshold=0.85):
     size = np.asarray(x.shape[1:-1])
     return_arguments = [] #nargs x bs
+    z = z/np.max(z)
     for ai in range(arguments.shape[1]):
-        idx = np.array([np.random.choice(arguments.shape[-1], 1, p = arguments[ii, ai,:]) for ii in range(arguments.shape[0])])[:,0] # None, None]
-        F = np.array([normalize(z[i, idx[i], ...]) for i in range(z.shape[0])])
-        Bmask = F #np.uint8(F > (threshold*255))
-        # import pdb; pdb.set_trace()
+        idx = np.array([np.random.choice(arguments.shape[-1], 1, p = arguments[ii, ai,:]) for ii in range(arguments.shape[0])])[:,0] 
+        
+        z_pertub = []
+        for i in range(z.shape[0]):
+            z_ = copy.deepcopy(z[i])
+            z_[sampled_idx[i] == sampled_idx[i][idx[i]]] = 0 
+            z_pertub.append(z_)
+        z_pertub = np.array(z_pertub)
+
+        F_cummilative = np.mean(z, 1)
+        Ft_cummilative = np.mean(z_pertub, 1)
+
+        # import pdb;pdb.set_trace()
+        F = F_cummilative - Ft_cummilative
+        Bmask = F #*np.uint8(F > (threshold*np.median(F)))
         Bmask = np.array([cv2.resize(Fd, tuple(size), interpolation = cv2.INTER_CUBIC) for Fd in Bmask])
-        # print (wts[0], F, threshold*255, Bmask, "=============================")
         return_arguments.append(Bmask[...,None])
 
     return_arguments = np.array(return_arguments)
@@ -130,13 +141,14 @@ def main_image(args, epoch, plot=False):
         if plot:
             logs_data['visual_arguments'][ai] = get_arguments(logs_data['images'], 
                                                             data['zs'],
+                                                            data['zs_idx'],
                                                             data['arguments'],
                                                             args.threshold)
 
     if plot:
         narguments = len(logs_data['arguments'][0][0])
-        num_imgs = logs_data['images'][0].shape[0]
-        img_shape = np.asarray([logs_data['images'][0][0].shape[1:]])
+        num_imgs = logs_data['images'].shape[0]
+        img_shape = np.asarray([logs_data['images'][0].shape[1:]])
         
         # denormalize coordinates
         nrows = args.nagents*num_imgs
@@ -150,14 +162,16 @@ def main_image(args, epoch, plot=False):
         # plot base image
         color = ['r', 'b', 'g', 'c', 'm', 'y']
         for imgidx in range(0, nrows, args.nagents):
-            title = '$Y={}$, $\mathcal{{J}}(x)={}$, $Debate(x)={}$, '.format(logs_data['labels'][imgidx],
-                                                                        logs_data['jpred'][imgidx],
-                                                                        logs_data['outcome'][imgidx])
-            if logs_data['labels'][imgidx] != logs_data['jpred'][imgidx]: continue
+            title = '$Y={}$, $\mathcal{{J}}(x)={}$, $Debate(x)={}$, '.format(logs_data['labels'][imgidx//2],
+                                                                        logs_data['jpred'][imgidx//2],
+                                                                        logs_data['outcome'][imgidx//2])
+            if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
+            if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
+            if logs_data['predictions'][0][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
 
             for aidx in range(args.nagents):
                 title += '$\mathcal{{P}}^{}(x)={}$, '.format(aidx+1, 
-                                                logs_data['predictions'][aidx][imgidx])
+                                                logs_data['predictions'][aidx][imgidx//2])
                                     
                 for argidx in range(ncols):
                     if argidx == 0:
@@ -165,7 +179,7 @@ def main_image(args, epoch, plot=False):
                                                 loc=(imgidx, 0), 
                                                 colspan=args.nagents,
                                                 rowspan=args.nagents)
-                        ax.imshow(normalize(logs_data['images'][imgidx]),cmap='gray')
+                        ax.imshow(normalize(logs_data['images'][imgidx//2]),cmap='gray')
                         ax.get_xaxis().set_visible(False)
                         ax.get_yaxis().set_visible(False)
                         ax.set_title(title)
@@ -177,8 +191,8 @@ def main_image(args, epoch, plot=False):
                         ax = plt.subplot2grid(shape=(nrows, ncols), 
                                                 loc=(imgidx + aidx, argidx))
 
-                        ax.imshow(normalize(logs_data['images'][imgidx]), cmap='gray', alpha=0.5)
-                        ax.imshow(logs_data['visual_arguments'][aidx][imgidx, argidx - args.nagents], cmap='coolwarm', alpha=0.5)
+                        ax.imshow(normalize(logs_data['images'][imgidx//2]), cmap='gray', alpha=0.5)
+                        ax.imshow(logs_data['visual_arguments'][aidx][imgidx//2, argidx - args.nagents], cmap='coolwarm', alpha=0.5)
                         ax.get_xaxis().set_visible(False)
                         ax.get_yaxis().set_visible(False)
                         ax.set_title('$\mathcal{{A}}^{}_{}$'.format(aidx +1, argidx - args.nagents + 1))

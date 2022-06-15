@@ -43,8 +43,8 @@ class RecurrentAttentionAgent(nn.Module):
                             lr=lr, 
                             weight_decay=weight_decay)
 
-    def forwardStep(self, x, arg_agent, arg_other, h_t):
-        return self.ram_net.step(x, arg_agent, arg_other, h_t)
+    def forwardStep(self, *args):
+        return self.ram_net.step(*args)
 
     def optStep(self, loss):
         self.optimizer.zero_grad()

@@ -1,9 +1,9 @@
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/AFHQ/afhq \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS6/AFHQ/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS6/AFHQ/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsSS2/AFHQ/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsSS2/AFHQ/debate/plots \
         --img_size=128 \
-        --epoch=150 \
+        --epoch=30 \
         --batch_size=16 \
         --device=0 \
         --print_freq=50 \
@@ -21,10 +21,10 @@ echo Debate Completed
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/AFHQ/afhq \
-        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS6/AFHQ/debate/ckpt \
-        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsS6/AFHQ/debate/plots \
+        --ckpt_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsSS2/AFHQ/debate/ckpt \
+        --plot_dir=/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsSS2/AFHQ/debate/plots \
         --img_size=128 \
-        --epoch=200 \
+        --epoch=50 \
         --batch_size=16 \
         --device=0 \
         --print_freq=50 \

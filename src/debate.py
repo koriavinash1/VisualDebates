@@ -74,7 +74,7 @@ class Debate(nn.Module):
         self.quantized_classifier = QClassifier(args.nfeatures, args.n_class)
         self.quantized_optimizer = torch.optim.Adam (list(self.discretizer.parameters()) + \
                                                     list(self.quantized_classifier.parameters()), 
-                                                    lr=args.init_lr, weight_decay=1e-5)
+                                                    lr=1e-3, weight_decay=1e-5)
 
 
     def fext(self, x):
@@ -83,7 +83,7 @@ class Debate(nn.Module):
         return z.detach(), symbol_idx, loss, cbvar, tdis, hsw, r
 
 
-    def step(self, z):
+    def step(self, z, y):
         batch_size = z.shape[0]
         
         
@@ -100,22 +100,16 @@ class Debate(nn.Module):
             for ai, agent in enumerate(self.agents):
                 args_idx_t_const = copy.deepcopy(args_idx_t[t-1])
 
-                # mapping idx to args---------------------
-                # args_t_const = [torch.cat([z[i, _idx_, ...].unsqueeze(0) \
-                #                 for i, _idx_ in enumerate(idx_)], 0) \
-                #                 for idx_ in args_idx_t_const]
-                
                 args_t_const = args_idx_t_const
                 args_t_agent = args_t_const[ai]
                 del args_t_const[ai]
                 
-                # print ("*******=======", args_t_agent.shape, args_t_const[0].shape)
                 if len(args_t_const) > 0:
                     args_t_const = torch.cat([arg_.unsqueeze(1) for arg_ in args_t_const], dim=1) # batch_size, nagents -1, ...
                     args_t_const = args_t_const.squeeze().detach()
 
 
-                hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
+                hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, y,
                                                             args_t_agent, 
                                                             args_t_const, 
                                                             hs_t[ai])
@@ -151,7 +145,8 @@ class Debate(nn.Module):
         """
         @param x: probability vector (probabilities of categorical disributions)
         """
-        b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
+        # b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
+        b = torch.max(F.softmax(x, dim=1), dim=1)[0] # * F.log_softmax(x, dim=1)
         return torch.mean(b)
 
 
@@ -170,21 +165,8 @@ class Debate(nn.Module):
         else:
             dist_ = torch.norm(dist0tilde.detach() - dist1tilde, 1)
 
-
-        # sum_dist = 0
-        # for arg0 in dist0:
-        #     arg0 = arg0 + 0.001
-
-        #     dist = 1000
-        #     for arg1 in dist1:
-        #         arg1 = arg1 + 0.001
-
-
-        #         if dist_ < dist: dist = dist_
-        #     sum_dist += dist
-
         distance = 0.1*torch.mean(dist_)
-        return distance
+        return distance, 0
 
 
 
@@ -205,7 +187,9 @@ class Debate(nn.Module):
 
         # Judge prediction
         with torch.no_grad():
-            jpred = torch.max(self.judge(x), 1)[1].detach()
+            jpred_probs = self.judge(x).detach()
+            jpred_probs = F.softmax(jpred_probs, 1)
+            jpred = torch.max(jpred_probs, 1)[1]
 
 
         # quantized distillation
@@ -221,7 +205,7 @@ class Debate(nn.Module):
         cq_acc = 100 * (cq_correct.sum() / len(y))
 
 
-        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z)
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z, jpred_probs)
 
 
         # zerosum-component:
@@ -265,17 +249,17 @@ class Debate(nn.Module):
 
             # sum up into a hybrid loss
             intra_loss = self.HLoss(args_dist)
-            inter_dis = self.DDistance(arg_dists_t, ai)
+            inter_dis, HB = self.DDistance(arg_dists_t, ai)
             
             if self.contrastive:
-                regularization_loss = -1*(intra_loss + inter_dis)
+                regularization_loss = 1.0 - 1*intra_loss - inter_dis
             else:
-                regularization_loss = -1*(intra_loss - inter_dis)
+                regularization_loss = 1.0 - 1*intra_loss + inter_dis
+            
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      loss_classifier + regularization_loss
 
 
-            # print (intra_loss, inter_dis, loss, loss_reinforce, loss_baseline, loss_classifier)
 
             correct = (claims[ai] == jpred).float()
             acc = 100 * (correct.sum() / len(y))
@@ -319,17 +303,27 @@ class Debate(nn.Module):
         # log_probas:       (batch*M, num_class)
 
 
+        # Judge prediction
+        jpred_probs = self.judge(x).detach()
+        jpred_probs = F.softmax(jpred_probs, 1)
+        jpred = torch.max(jpred_probs, 1)[1]
+        jpred = jpred.contiguous().view((self.M, x_orig.shape[0]) + jpred.shape[1:])
+        jpred = jpred[0]
+
 
         z_, symbol_idxs_, qloss, cbvar, dis, hsw, r = self.fext(x)
-        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z_)
+        cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z_, (1,1)).squeeze())
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z_, jpred_probs)
+
+
         z = z_.contiguous().view((self.M, x_orig.shape[0]) + z_.shape[1:])
         z = z[0]
+
 
         symbol_idxs = symbol_idxs_.contiguous().view((self.M, x_orig.shape[0]) + symbol_idxs_.shape[1:])
         symbol_idxs = symbol_idxs[0]
 
-        # Judge prediction
-        jpred = torch.max(self.judge(x_orig), 1)[1].detach()
+        
 
 
         # zerosum-component:
@@ -398,14 +392,13 @@ class Debate(nn.Module):
 
             # sum up into a hybrid loss
             intra_loss = self.HLoss(args_dist)
-            inter_dis = self.DDistance(arg_dists_t, ai)
+            inter_dis, HB = self.DDistance(arg_dists_t, ai)
 
             if self.contrastive:
-                regularization_loss = -1*(intra_loss + inter_dis)
+                regularization_loss = 1.0 - 1*intra_loss - inter_dis
             else:
-                regularization_loss = -1*(intra_loss - inter_dis)
+                regularization_loss = 1.0 - 1*intra_loss + inter_dis
 
-                
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
                      loss_classifier + regularization_loss
 

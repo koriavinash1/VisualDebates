@@ -22,7 +22,7 @@ def parse_args():
     import sys
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--name', type=str, default='test', help='Name of an exp')
-    parser.add_argument('--M', type=float, default=5, help='Monte Carlo sampling for valid and test sets')
+    parser.add_argument('--M', type=float, default=1, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
@@ -37,7 +37,7 @@ def parse_args():
     vq_network_arg.add_argument('--nfeatures', type=int, default=64, help='total number of sampled discrete symbols for every image')
     vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
     vq_network_arg.add_argument('--beta', type=float, default=0.9, help='component of quantization loss')
-    vq_network_arg.add_argument('--disentangle', type=bool, default=True, help='enforces disentanglement with addditional regularizations')
+    vq_network_arg.add_argument('--disentangle', type=bool, default=False, help='enforces disentanglement with addditional regularizations')
     vq_network_arg.add_argument('--remap', default=None, help='for remapping idx ot desired dimension')
     vq_network_arg.add_argument('--unknown_index', type=str, default="random", help='remap parameter')
     vq_network_arg.add_argument('--legacy', type=bool, default=True, help='use previously predicted info')
@@ -239,7 +239,7 @@ if __name__ == '__main__':
 
 
     def get_rewardZEROSUM(z, sampled_idx, arguments, claims, y, attacker=False):
-        EPS = 0.05
+        EPS = 0.2
         arguments = [torch.transpose(arguments[0], 0,1), 
                         torch.transpose(arguments[1], 0,1)]
 
@@ -251,6 +251,7 @@ if __name__ == '__main__':
             orig_score = model.quantized_classifier(z)
             z_pertub = []
             for i, z_ in enumerate(z.clone()):
+                # arguments are onehot vectors
                 arg1_ = torch.argmax(arg1, 1)
                 arg2_ = torch.argmax(arg2, 1)
 
@@ -266,6 +267,7 @@ if __name__ == '__main__':
 
             # class specific prob difference
             delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
+
             rewards = -1*torch.ones_like(delta)
             rewards[delta > EPS] = 1     
 
@@ -285,13 +287,16 @@ if __name__ == '__main__':
         rand_prob = np.random.uniform(0,1)
 
         if args.contrastive:
+
+            # masking z based on arguments..........
             z_pertub = z.clone()
             z_pertub = []
             for i, z_ in enumerate(z.clone()):
                 for t, (arg1, arg2) in enumerate(zip(*arguments)):
+
+                    # arguments are one-hot vectors..........
                     arg1_ = torch.argmax(arg1, 1)
                     arg2_ = torch.argmax(arg2, 1)
-                    # print(arg1_, arg2_)
 
                     z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
                     z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
@@ -300,15 +305,13 @@ if __name__ == '__main__':
 
             z_pertub = torch.cat(z_pertub, 0)
             debate_information = z - z_pertub
+
             with torch.no_grad():
                 pred = model.quantized_classifier(debate_information)
                 pred = torch.argmax(pred, dim=1)
         else:
             pred = y
 
-
-        # print (arg1_, arg1, z, z_pertub, pred)
-        # print ("================")
 
         eq_idx = (claims[0] == claims[1]).float()
         p1_idx = (pred == claims[0])
@@ -330,7 +333,7 @@ if __name__ == '__main__':
                 reward[p2_idx] = 1
 
             reward *= (args.narguments + 1)
-            # reward *= (1-eq_idx)
+            reward *= (1 - eq_idx)
 
         # if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
         #     reward = (pred == y).float()
@@ -341,8 +344,8 @@ if __name__ == '__main__':
 
         
     
-    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y),
-                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True),]
+    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True),
+                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, False),]
     model.reward_fns = reward_fns
 
 
