@@ -367,7 +367,7 @@ class PlayerClassifier(nn.Module):
         self.fc1 = nn.Linear(input_size, output_size)
         self.fc2 = nn.Linear(output_size, output_size)
 
-    def forward(self, z, z_idx, arg, h_t):
+    def forward(self, z, arg, h_t):
         """
         Uses the last output of the decoder to output the final classification.
         @param h_t: (batch, rnn_hidden)
@@ -375,18 +375,9 @@ class PlayerClassifier(nn.Module):
         """
 
         # mask z
-        arg = torch.transpose(arg, 0, 1)
-        z_pertub = []
-
-        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-        for i, z_ in enumerate(z.clone()):
-            for t, arg_ in enumerate(arg):
-                arg_ = torch.argmax(arg_, 1)
-                z_[z_idx[i] == z_idx[i][arg_[i]]] = 0
-            z_pertub.append(z_.unsqueeze(0))
-        z_pertub = torch.cat(z_pertub, 0)
-
-        z = z - z_pertub
+        z = F.adaptive_avg_pool2d(z, (1,1)).squeeze()
+        arg = torch.clip(torch.sum(arg, 1), 0, 1)  
+        z = z * arg
 
         #==================
         h_t = F.relu6(h_t)
@@ -560,7 +551,7 @@ class PlayerNet(nn.Module):
             self.cuda()
 
 
-    def step(self, z, y, arg1_t, arg2_t, h_t):
+    def step(self, z, z_idxs, y, arg1_t, arg2_t, h_t):
         """
         @param z: image. (batch, channel, height, width)
         @param arg1_t:
@@ -579,11 +570,16 @@ class PlayerNet(nn.Module):
         log_pi = argument_dist.log_prob(arg_current)
 
 
-        arg_current = 1.0*F.one_hot(arg_current, num_classes=argument_prob.shape[-1])
+        arg_current_one_hot = 1.0*F.one_hot(arg_current, num_classes=argument_prob.shape[-1])
+
+
+        for i, _ in enumerate(z.clone()):
+            arg_current_one_hot[i, z_idxs[i] == z_idxs[i][arg_current[i]]] = 1
+
 
         # log_pi = argument_dist.log_prob(arg_current)
-        z_current = self.modulator_net(z, arg_current)
+        z_current = self.modulator_net(z, arg_current_one_hot)
         h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()
 
-        return h_t, arg_current, b_t, log_pi, argument_prob
+        return h_t, arg_current_one_hot, b_t, log_pi, argument_prob

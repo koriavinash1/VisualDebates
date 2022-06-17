@@ -11,7 +11,7 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --n_class=3 \
         --nfeatures=1024\
         --cdim=16 \
-        --init_lr=1e-3 \
+        --init_lr=2e-4 \
         --narguments=$1 \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \

@@ -10,7 +10,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import os, json
 import torchnet as tnt
-from src.clsmodel import afhq, mnist, stl10
+from src.clsmodel import afhq, mnist, stl10, shapes
 from src.modules import QClassifier, VectorQuantizer2DHS
 
 
@@ -45,6 +45,8 @@ class Debate(nn.Module):
 
         if args.data_dir.lower().__contains__('mnist'):
             self.judge = mnist(32, pretrained=True)
+        elif args.data_dir.lower().__contains__('shapes'):
+            self.judge = shapes(16, pretrained=True)
         elif args.data_dir.lower().__contains__('stl10'):
             self.judge = stl10(32, pretrained=True)
         elif args.data_dir.lower().__contains__('afhq'):
@@ -75,7 +77,8 @@ class Debate(nn.Module):
         self.quantized_optimizer = torch.optim.Adam (list(self.discretizer.parameters()) + \
                                                     list(self.quantized_classifier.parameters()), 
                                                     lr=1e-3, weight_decay=1e-5)
-
+        if self.contrastive:
+            self.quantized_classifier.eval()
 
     def fext(self, x):
         z, loss, (onehot_symbols, symbol_idx), \
@@ -83,7 +86,7 @@ class Debate(nn.Module):
         return z.detach(), symbol_idx, loss, cbvar, tdis, hsw, r
 
 
-    def step(self, z, y):
+    def step(self, z, symbol_idxs, y):
         batch_size = z.shape[0]
         
         
@@ -109,10 +112,11 @@ class Debate(nn.Module):
                     args_t_const = args_t_const.squeeze().detach()
 
 
-                hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, y,
-                                                            args_t_agent, 
-                                                            args_t_const, 
-                                                            hs_t[ai])
+                hs_t[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
+                                                                    symbol_idxs, y,
+                                                                    args_t_agent, 
+                                                                    args_t_const, 
+                                                                    hs_t[ai])
 
                 args_idx_t[t][ai] = arg_idx_t; 
                 arg_dists_t[t][ai] = dist; 
@@ -150,7 +154,7 @@ class Debate(nn.Module):
         return torch.mean(b)
 
 
-    def DDistance(self, dists, ai):
+    def DDistance(self, dists, arguments, ai):
         """
         @param dists: list of list of categorical distribtuions
         """
@@ -162,11 +166,19 @@ class Debate(nn.Module):
 
         if ai == 0: 
             dist_ = torch.norm(dist0tilde - dist1tilde.detach(), 1)
+            inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0),
+                                                    arguments[1].unsqueeze(0).detach()], 0), 0))
+            intra_variance = torch.mean(torch.var(arguments[0], 1))
         else:
             dist_ = torch.norm(dist0tilde.detach() - dist1tilde, 1)
+            inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0).detach(),
+                                                    arguments[1].unsqueeze(0)], 0), 0))
+            intra_variance = torch.mean(torch.var(arguments[1], 1))
 
         distance = 0.1*torch.mean(dist_)
-        return distance, 0
+
+
+        return distance, (inter_variance, intra_variance)
 
 
 
@@ -183,7 +195,6 @@ class Debate(nn.Module):
         if not is_training:
             return self.forward_test(x, y, epoch)
 
-        z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
 
         # Judge prediction
         with torch.no_grad():
@@ -193,27 +204,34 @@ class Debate(nn.Module):
 
 
         # quantized distillation
-        self.quantized_optimizer.zero_grad()
-        cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z, (1,1)).squeeze())
-        cq_loss = F.nll_loss(cqlog_probs, jpred)
-        cq_loss = cq_loss + qloss
-        cq_loss.backward()
-        self.quantized_optimizer.step()
+        if not self.contrastive:
+            z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+            self.quantized_optimizer.zero_grad()
+            cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z, (1,1)).squeeze())
+            cq_loss = F.nll_loss(cqlog_probs, jpred)
+            cq_loss = cq_loss + qloss
+            cq_loss.backward()
+            self.quantized_optimizer.step()
+        else:
+            with torch.no_grad():
+                z, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+                cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z, (1,1)).squeeze())
+
 
         cq_preds = torch.max(cqlog_probs, 1)[1]
         cq_correct = (cq_preds == jpred).float()
         cq_acc = 100 * (cq_correct.sum() / len(y))
 
 
-        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z, jpred_probs)
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z, symbol_idxs, jpred_probs)
 
 
         # zerosum-component:
         arguments = [self.reformat(args_idx_t, 0), self.reformat(args_idx_t, 1)]
-        log_prob_agents = [self.agents[0].classifier(z, symbol_idxs, arguments[0], h_t[0][0]),
-                        self.agents[1].classifier(z, symbol_idxs, arguments[1], h_t[1][0])]
+        log_prob_agents = [self.agents[0].classifier(z, arguments[0], h_t[0][0]),
+                            self.agents[1].classifier(z, arguments[1], h_t[1][0])]
         claims = [torch.argmax(log_prob_agents[0].detach(), 1), 
-                        torch.argmax(log_prob_agents[1].detach(), 1)]
+                            torch.argmax(log_prob_agents[1].detach(), 1)]
 
         # individual agent optimizer
         logs = {}
@@ -227,9 +245,9 @@ class Debate(nn.Module):
             # Classifier Loss -> distillation loss
             log_probs_agent = log_prob_agents[ai]
             if self.contrastive:
-                loss_classifier = 0
+                loss_classifier = 0.1 * F.nll_loss(log_probs_agent, jpred)
             else:
-                loss_classifier = F.nll_loss(log_probs_agent, jpred)
+                loss_classifier = 10 * F.nll_loss(log_probs_agent, jpred)
 
 
             # Baseline Loss
@@ -248,16 +266,16 @@ class Debate(nn.Module):
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(args_dist)
-            inter_dis, HB = self.DDistance(arg_dists_t, ai)
+            # intra_loss = self.HLoss(args_dist)
+            # inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
             
-            if self.contrastive:
-                regularization_loss = 1.0 - 1*intra_loss - inter_dis
-            else:
-                regularization_loss = 1.0 - 1*intra_loss + inter_dis
+            # if self.contrastive:
+            #     regularization_loss = -intra_loss - inter_dis - divergance[0] - divergance[1]
+            # else:
+            #     regularization_loss = .1*(-intra_loss- divergance[1]) + inter_dis + divergance[0] 
             
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     loss_classifier + regularization_loss
+                     loss_classifier # + 0.01*regularization_loss
 
 
 
@@ -266,6 +284,7 @@ class Debate(nn.Module):
 
             dcorrect = (dpred == jpred).float()
             dacc = 100 * (dcorrect.sum() / len(y))
+
 
             agent.optStep(loss)
 
@@ -285,7 +304,6 @@ class Debate(nn.Module):
             logs[ai]['preds'] = claims[ai]
             logs[ai]['arguments'] = arguments[ai]
             logs[ai]['argument_dist'] = args_dist
-
 
         return logs
 
@@ -313,7 +331,7 @@ class Debate(nn.Module):
 
         z_, symbol_idxs_, qloss, cbvar, dis, hsw, r = self.fext(x)
         cqlog_probs = self.quantized_classifier(F.adaptive_avg_pool2d(z_, (1,1)).squeeze())
-        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z_, jpred_probs)
+        args_idx_t, arg_dists_t, b_ts, log_pis, h_t = self.step(z_, symbol_idxs_, jpred_probs)
 
 
         z = z_.contiguous().view((self.M, x_orig.shape[0]) + z_.shape[1:])
@@ -329,27 +347,26 @@ class Debate(nn.Module):
         # zerosum-component:
         arguments_ = [self.reformat(args_idx_t, 0), self.reformat(args_idx_t, 1)]
         arguments0 = arguments_[0].contiguous().view((self.M, x_orig.shape[0]) + arguments_[0].shape[1:])
-        arguments0 = torch.mean(arguments0, dim = 0)
+        arguments0 = torch.clip(torch.sum(arguments0, dim = 0), 0, 1)
         
         arguments1 = arguments_[1].contiguous().view((self.M, x_orig.shape[0]) + arguments_[1].shape[1:])
-        arguments1 = torch.mean(arguments1, dim = 0)
+        arguments1 = torch.clip(torch.sum(arguments1, dim = 0), 0, 1)
+
         arguments = [arguments0, arguments1]        
 
 
-        log_prob_agents = [self.agents[0].classifier(z_, symbol_idxs_, arguments_[0], h_t[0][0]),
-                        self.agents[1].classifier(z_, symbol_idxs_, arguments_[1], h_t[1][0])]
-        log_prob_agents = [log_prob_agents[0].contiguous().view(self.M, -1, 
-                                        log_prob_agents[0].shape[-1]),
-                            log_prob_agents[1].contiguous().view(self.M, -1, 
-                                        log_prob_agents[1].shape[-1])]
-        log_prob_agents = [torch.mean(log_prob_agents[0], dim=0),
-                            torch.mean(log_prob_agents[1], dim=0)]
+
+        log_prob_agents = [self.agents[0].classifier(z_, arguments_[0], h_t[0][0]),
+                            self.agents[1].classifier(z_, arguments_[1], h_t[1][0])]
+        log_prob_agents = [log_prob_agents[0].contiguous().view(self.M, -1, log_prob_agents[0].shape[-1]),
+                            log_prob_agents[1].contiguous().view(self.M, -1, log_prob_agents[1].shape[-1])]
+        log_prob_agents = [torch.mean(log_prob_agents[0], dim=0), torch.mean(log_prob_agents[1], dim=0)]
 
 
-        claims = [torch.argmax(log_prob_agents[0].detach(), 1), 
-                        torch.argmax(log_prob_agents[1].detach(), 1)]
+        claims = [torch.argmax(log_prob_agents[0].detach(), 1), torch.argmax(log_prob_agents[1].detach(), 1)]
+        
+        
         logs = {}
-
         for ai, agent in enumerate(self.agents):
             baselines = self.reformat(b_ts, ai)
             args_dist = self.reformat(arg_dists_t, ai, True)
@@ -367,9 +384,9 @@ class Debate(nn.Module):
 
             # classifier loss -> distillation
             if self.contrastive:
-                loss_classifier = 0
+                loss_classifier = 0.1 * F.nll_loss(log_prob_agents[ai], jpred)
             else:
-                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
+                loss_classifier = 10.0 * F.nll_loss(log_prob_agents[ai], jpred)
             
             
             # Prediction Loss & Reward
@@ -386,21 +403,22 @@ class Debate(nn.Module):
             # TODO: thought https://github.com/kevinzakka/recurrent-visual-attention/issues/10#issuecomment-378692338
             adjusted_reward = reward - baselines.detach()
             loss_reinforce = torch.mean(-log_pi*adjusted_reward)
+
             # loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
             # loss_reinforce = torch.mean(loss_reinforce)
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(args_dist)
-            inter_dis, HB = self.DDistance(arg_dists_t, ai)
+            # intra_loss = self.HLoss(args_dist)
+            # inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
 
-            if self.contrastive:
-                regularization_loss = 1.0 - 1*intra_loss - inter_dis
-            else:
-                regularization_loss = 1.0 - 1*intra_loss + inter_dis
+            # if self.contrastive:
+            #     regularization_loss = - intra_loss - inter_dis - divergance[0] - divergance[1]
+            # else:
+            #     regularization_loss = .1*(- intra_loss - divergance[1]) + inter_dis + divergance[0] 
 
             loss = self.rl_weightage*(loss_reinforce + loss_baseline) +\
-                     loss_classifier + regularization_loss
+                     loss_classifier # + 0.01*regularization_loss
 
 
              # calculate accuracy

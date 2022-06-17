@@ -96,7 +96,7 @@ def get_arguments(x, z, sampled_idx, arguments, threshold=0.85):
 
         # import pdb;pdb.set_trace()
         F = F_cummilative - Ft_cummilative
-        Bmask = F #*np.uint8(F > (threshold*np.median(F)))
+        Bmask = F*np.uint8(F > (threshold*np.median(F)))
         Bmask = np.array([cv2.resize(Fd, tuple(size), interpolation = cv2.INTER_CUBIC) for Fd in Bmask])
         return_arguments.append(Bmask[...,None])
 
@@ -166,14 +166,17 @@ def main_image(args, epoch, plot=False):
                                                                         logs_data['jpred'][imgidx//2],
                                                                         logs_data['outcome'][imgidx//2])
             if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
+            if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
             if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
-            if logs_data['predictions'][0][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
+            if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
 
             for aidx in range(args.nagents):
+                aidx = 1 - aidx
                 title += '$\mathcal{{P}}^{}(x)={}$, '.format(aidx+1, 
                                                 logs_data['predictions'][aidx][imgidx//2])
                                     
                 for argidx in range(ncols):
+                    
                     if argidx == 0:
                         ax = plt.subplot2grid(shape=(nrows, ncols), 
                                                 loc=(imgidx, 0), 
@@ -199,6 +202,7 @@ def main_image(args, epoch, plot=False):
 
         # save as png
         path = os.path.join(os.path.dirname(args.plot_dir), 'pngs/')
+        os.makedirs(path, exist_ok=True)
         path = os.path.join(path, 'epoch_{}.png'.format(epoch))
         plt.savefig(path, bbox_inches='tight')
     
@@ -210,12 +214,12 @@ if __name__ == "__main__":
     args = parse_arguments()
     name = args.name
     os.makedirs(os.path.join(args.plot_dir, 'pngs'), exist_ok=True)
-    max_epoch = 49 #TODO: update...
+    max_epoch = 19 #TODO: update...
 
     ZR = []; AH = []; AD = []; epochs = []; accs = []; P1L = []; P2L = []
     for epoch_ in range(args.start_epoch, max_epoch):
         # try:
-        data = main_image(args, epoch_, plot=False)
+        data = main_image(args, epoch_, plot=True)
         # except:
             # exit()
         print ("epoch: ================", epoch_)

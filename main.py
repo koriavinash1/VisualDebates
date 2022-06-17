@@ -22,7 +22,7 @@ def parse_args():
     import sys
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--name', type=str, default='test', help='Name of an exp')
-    parser.add_argument('--M', type=float, default=1, help='Monte Carlo sampling for valid and test sets')
+    parser.add_argument('--M', type=float, default=10, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
@@ -101,7 +101,7 @@ def parse_args():
     debate_arg.add_argument('--nagents', type=int, default=2, help='# of agents in debate')
     debate_arg.add_argument('--contrastive', type=bool, default=False, help='fine tune supporter models')
     debate_arg.add_argument('--reward_weightage', type=float, default=1, help='weightage for reward')
-    debate_arg.add_argument('--rl_weightage', type=float, default=0.01, help='weightage for rl loss terms')
+    debate_arg.add_argument('--rl_weightage', type=float, default=1, help='weightage for rl loss terms')
 
 
     # LocationNet params
@@ -249,18 +249,21 @@ if __name__ == '__main__':
         @torch.no_grad()
         def get_AS(z, arg1, arg2):
             orig_score = model.quantized_classifier(z)
-            z_pertub = []
-            for i, z_ in enumerate(z.clone()):
-                # arguments are onehot vectors
-                arg1_ = torch.argmax(arg1, 1)
-                arg2_ = torch.argmax(arg2, 1)
+            # z_pertub = []
+            # for i, z_ in enumerate(z.clone()):
+            #     # arguments are onehot vectors
+            #     arg1_ = torch.argmax(arg1, 1)
+            #     arg2_ = torch.argmax(arg2, 1)
 
-                z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
-                z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
+            #     z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
+            #     z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
 
-                z_pertub.append(z_.unsqueeze(0))
+            #     z_pertub.append(z_.unsqueeze(0))
 
-            z_pertub = torch.cat(z_pertub, 0)
+            # z_pertub = z - torch.cat(z_pertub, 0)
+
+            z_pertub = z.clone()
+            z_pertub *= torch.clip((arg1 + arg2), 0, 1)
             perturbed_score = model.quantized_classifier(z_pertub)
 
             delta =  torch.abs(orig_score - perturbed_score)
@@ -290,21 +293,26 @@ if __name__ == '__main__':
 
             # masking z based on arguments..........
             z_pertub = z.clone()
-            z_pertub = []
-            for i, z_ in enumerate(z.clone()):
-                for t, (arg1, arg2) in enumerate(zip(*arguments)):
 
-                    # arguments are one-hot vectors..........
-                    arg1_ = torch.argmax(arg1, 1)
-                    arg2_ = torch.argmax(arg2, 1)
+            # z_pertub = []
+            # for i, z_ in enumerate(z.clone()):
+            #     for t, (arg1, arg2) in enumerate(zip(*arguments)):
 
-                    z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
-                    z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
+            #         # arguments are one-hot vectors..........
+            #         arg1_ = torch.argmax(arg1, 1)
+            #         arg2_ = torch.argmax(arg2, 1)
 
-                z_pertub.append(z_.unsqueeze(0))
+            #         z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
+            #         z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
 
-            z_pertub = torch.cat(z_pertub, 0)
-            debate_information = z - z_pertub
+            #     z_pertub.append(z_.unsqueeze(0))
+
+            # z_pertub = torch.cat(z_pertub, 0)
+            # debate_information = z - z_pertub
+
+            arguments = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
+            debate_information = z_pertub*arguments 
+
 
             with torch.no_grad():
                 pred = model.quantized_classifier(debate_information)
@@ -319,7 +327,7 @@ if __name__ == '__main__':
 
         reward = torch.zeros_like(eq_idx)
         if args.contrastive:
-            if (not attacker) or (rand_prob > manipulator_prob):
+            if (not attacker): # or (rand_prob > manipulator_prob):
                 reward[p1_idx] = 1
                 reward[p2_idx] = -1
             else:
@@ -329,23 +337,25 @@ if __name__ == '__main__':
         else:
             if not attacker:
                 reward[p1_idx] = 1
+                reward[p2_idx] = 1
             else:
+                reward[p1_idx] = 1
                 reward[p2_idx] = 1
 
             reward *= (args.narguments + 1)
-            reward *= (1 - eq_idx)
+            # reward *= (1 - eq_idx)
 
         # if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
         #     reward = (pred == y).float()
         # else:
         #     reward = -(pred == y).float()
 
-        return args.reward_weightage*reward + cummilative_AS, pred
+        return (args.reward_weightage*reward + cummilative_AS), pred
 
         
     
-    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True),
-                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, False),]
+    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, False),
+                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True)]
     model.reward_fns = reward_fns
 
 
