@@ -142,7 +142,7 @@ def main_image(args, epoch, plot=False):
             logs_data['visual_arguments'][ai] = get_arguments(logs_data['images'], 
                                                             data['zs'],
                                                             data['zs_idx'],
-                                                            data['arguments'],
+                                                            data['arguments_dist'],
                                                             args.threshold)
 
     if plot:
@@ -171,7 +171,7 @@ def main_image(args, epoch, plot=False):
             if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
 
             for aidx in range(args.nagents):
-                aidx = 1 - aidx
+                # aidx = 1 - aidx
                 title += '$\mathcal{{P}}^{}(x)={}$, '.format(aidx+1, 
                                                 logs_data['predictions'][aidx][imgidx//2])
                                     
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     args = parse_arguments()
     name = args.name
     os.makedirs(os.path.join(args.plot_dir, 'pngs'), exist_ok=True)
-    max_epoch = 19 #TODO: update...
+    max_epoch = 39 #TODO: update...
 
     ZR = []; AH = []; AD = []; epochs = []; accs = []; P1L = []; P2L = []
     for epoch_ in range(args.start_epoch, max_epoch):

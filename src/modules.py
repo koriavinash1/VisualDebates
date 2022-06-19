@@ -375,17 +375,14 @@ class PlayerClassifier(nn.Module):
         """
 
         # mask z
-        z = F.adaptive_avg_pool2d(z, (1,1)).squeeze()
         arg = torch.clip(torch.sum(arg, 1), 0, 1)  
         z = z * arg
 
         #==================
-        h_t = F.relu6(h_t)
-        h_t = F.relu6(self.fc(h_t))
-        zd = F.relu6(self.fc1(z))
+        h_t = F.tanh(self.fc(h_t))
+        zd = F.relu(self.fc1(z))
 
-
-        f = F.relu6(self.fc2(h_t + zd))
+        f = F.relu(self.fc2(h_t + zd))
         a_t = F.log_softmax(f, dim=1)
         return a_t
 
@@ -403,9 +400,7 @@ class PolicyNet(nn.Module):
         super(PolicyNet, self).__init__()
         self.fc1 = nn.Linear(input_size, output_size//2)
         self.fc2 = nn.Linear(input_size, output_size//2)
-
         self.fc3 = nn.Linear (hidden_size, output_size//2)
-
         self.fc4 = nn.Linear(nclasses, output_size//2)
 
         self.combine = nn.Linear(2*output_size, output_size)
@@ -413,41 +408,32 @@ class PolicyNet(nn.Module):
         if use_gpu:
             self.cuda()
 
-    def forward(self, z,  y, arg1, arg2, h):
-        
-        batch_size = z.shape[0]
-        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-
-        # z_info = F.relu6(self.fc4(z))
-        # arg1 = arg1.view(batch_size, -1)
-        # arg2 = arg2.view(batch_size, -1)
-
-        # print (arg1.shape, arg2.shape, z.shape)
+    def forward(self, z,  y, arg1, arg2, h):  
+            
         arg1 = z*arg1
         arg2 = z*arg2
 
-        arg1_info = F.relu6(self.fc1(arg1))
-        arg2_info = F.relu6(self.fc2(arg2))
-        history = F.relu6(self.fc3(h))
-        decision_info = F.relu6(self.fc4(y))
+        arg1_info = F.relu(self.fc1(arg1))
+        arg2_info = F.relu(self.fc2(arg2))
+        decision_info = F.relu(self.fc4(y))
+        history = F.tanh(self.fc3(h))
 
-        logits = F.relu6(self.combine(torch.cat((arg1_info, 
+        logits = self.combine(torch.cat((arg1_info, 
                                             arg2_info,
                                             decision_info, 
-                                            history), dim=1)))
+                                            history), dim=1))
 
         return F.softmax(logits)
 
 
 
 class ModulatorNet(nn.Module):
-    def __init__(self, concept_size, input_size, output_size, use_gpu):
+    def __init__(self, input_size, output_size, use_gpu):
         """
         @param concept_size: dimension of an individual sampled symbol.
         @param output_size: output size of the fc layer, hidden vector dimension.
         """
         super(ModulatorNet, self).__init__()
-        # self.fc = nn.Linear(concept_size, output_size)
         self.fc = nn.Linear (input_size, output_size)
 
         self.final = nn.Linear (output_size, output_size)
@@ -456,20 +442,11 @@ class ModulatorNet(nn.Module):
             self.cuda()
 
     def forward(self, z, arg):
-        batch_size = z.shape[0]
-        z = F.adaptive_avg_pool2d(z , (1, 1)).squeeze()
-
-
-        # arg = torch.cat([z[i, _idx_].unsqueeze(0) \
-        #                 for i, _idx_ in enumerate(arg.detach())], 0)
-        # arg = arg.view(batch_size, -1)
 
         arg = arg*z
-        arg_info = F.relu6(self.fc(arg))
+        arg_info = F.relu(self.fc(arg))
 
-        # z_info = F.relu6(self.fc2(z))
-        # return F.relu6(self.final(arg_info + z_info))
-        return F.relu6(self.final(arg_info))
+        return F.relu(self.final(arg_info))
 
 
 class BaselineNet(nn.Module):
@@ -494,7 +471,7 @@ class BaselineNet(nn.Module):
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
-        b_t = self.fc(h_t)
+        b_t = self.fc(F.tanh(h_t))
         return b_t
 
 
@@ -513,7 +490,7 @@ class QClassifier(nn.Module):
         @param h_t: (batch, rnn_hidden)
         @return a_t: (batch, output_size)
         """
-        h_t = F.relu6(h_t)
+        h_t = F.tanh(h_t)
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
@@ -531,8 +508,7 @@ class PlayerNet(nn.Module):
         self.rnn = core_network(args.rnn_input_size, 
                                     args.rnn_hidden, 
                                     args.use_gpu)
-        self.modulator_net = ModulatorNet(concept_size = args.cdim,
-                                        input_size = args.nfeatures, 
+        self.modulator_net = ModulatorNet(input_size = args.nfeatures, 
                                         output_size = args.rnn_input_size,
                                         use_gpu = args.use_gpu)
         self.policy_net = PolicyNet(concept_size = args.cdim, 
@@ -560,7 +536,6 @@ class PlayerNet(nn.Module):
         """
 
         argument_prob = self.policy_net(z, y, arg1_t, arg2_t, h_t[0])
-        # arg_current = argument_prob.detach().clone()
         argument_dist = Categorical(argument_prob)
         arg_current = argument_dist.sample()
 
@@ -577,7 +552,6 @@ class PlayerNet(nn.Module):
             arg_current_one_hot[i, z_idxs[i] == z_idxs[i][arg_current[i]]] = 1
 
 
-        # log_pi = argument_dist.log_prob(arg_current)
         z_current = self.modulator_net(z, arg_current_one_hot)
         h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()

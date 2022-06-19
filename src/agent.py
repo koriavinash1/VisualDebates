@@ -31,7 +31,7 @@ class RecurrentAttentionAgent(nn.Module):
         arg_0 = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
         arg_0 = Variable(arg_0).type(dtype)
         arg_0 = F.softmax(arg_0, dim=1)
-        # return torch.argmax(arg_0, 1)
+        arg_0 = 1.0*F.one_hot(torch.argmax(arg_0, 1), num_classes=arg_0.shape[-1])
         return arg_0
     
     def init_rnn_hidden(self, batch_size):

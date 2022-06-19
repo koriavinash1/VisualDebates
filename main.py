@@ -188,63 +188,26 @@ if __name__ == '__main__':
     os.makedirs(args.plot_dir, exist_ok=True)
 
 
-
-    def get_reward(z, sampled_idx, arguments, logits, y, attacker=False):
-        EPS = 1e-3
-        pred = torch.max(logits, dim=1)[0]
-        rand_prob = np.random.uniform(0,1)
-
-        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
-        
-
-        @torch.no_grad()
-        def get_AS(z, arg):
-            orig_score = model.quantized_classifier(z)
-
-            z_pertub = []
-            for i, z_ in enumerate(z.clone()):
-                z_[sampled_idx[i] == arg[i]] = 0
-                z_pertub.append(z_.unsqueeze(0))
-
-            z_pertub = torch.cat(z_pertub, 0)
-            perturbed_score = model.quantized_classifier(z_pertub)
-
-            delta =  torch.abs(orig_score - perturbed_score)
-
-            # class specific prob difference
-            delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
-
-            rewards = torch.zeros_like(delta)
-
-            if attacker:
-                rewards[delta > EPS] = 1     
-                # rewards[delta < -EPS] =  -1
-            else:
-                # rewards[delta > EPS] = -1
-                rewards[delta < EPS] = 1
-            return rewards 
-
-        cummilative_AS = 0
-        if args.contrastive:
-            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for i, w in enumerate(torch.transpose(arguments, 0, 1))], 0)
-            cummilative_AS = torch.sum(AS_scores, 0)
-
-
-        if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
-            reward = (pred == y).float()
-        else:
-            reward = -(pred == y).float()
-
-        return args.reward_weightage*reward + cummilative_AS
-
-
     def get_rewardZEROSUM(z, sampled_idx, arguments, claims, y, attacker=False):
-        EPS = 0.2
+        EPS = 0.1
         arguments = [torch.transpose(arguments[0], 0,1), 
                         torch.transpose(arguments[1], 0,1)]
 
-        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
+        nargumets = arguments[0].shape[0]
+
+        def __repeated_count__(arg):
+            arg = torch.argmax(arg, 2)
+            unique = 1.*torch.tensor([len(torch.unique(arg[:, i], dim = 0)) for i in range(arg.shape[1])]).to(arg.device)
+            return nargumets - unique
+
+
+        if args.contrastive:
+            rcount = __repeated_count__(arguments[0]) - __repeated_count__(arguments[1])
+        else:
+            rcount = torch.max(torch.cat([__repeated_count__(arguments[0]).unsqueeze(0),
+                                         __repeated_count__(arguments[1]).unsqueeze(0)], 0), 0)[0]
         
+
 
         @torch.no_grad()
         def get_AS(z, arg1, arg2):
@@ -294,22 +257,6 @@ if __name__ == '__main__':
             # masking z based on arguments..........
             z_pertub = z.clone()
 
-            # z_pertub = []
-            # for i, z_ in enumerate(z.clone()):
-            #     for t, (arg1, arg2) in enumerate(zip(*arguments)):
-
-            #         # arguments are one-hot vectors..........
-            #         arg1_ = torch.argmax(arg1, 1)
-            #         arg2_ = torch.argmax(arg2, 1)
-
-            #         z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
-            #         z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
-
-            #     z_pertub.append(z_.unsqueeze(0))
-
-            # z_pertub = torch.cat(z_pertub, 0)
-            # debate_information = z - z_pertub
-
             arguments = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
             debate_information = z_pertub*arguments 
 
@@ -325,6 +272,7 @@ if __name__ == '__main__':
         p1_idx = (pred == claims[0])
         p2_idx = (pred == claims[1])
 
+
         reward = torch.zeros_like(eq_idx)
         if args.contrastive:
             if (not attacker): # or (rand_prob > manipulator_prob):
@@ -333,29 +281,34 @@ if __name__ == '__main__':
             else:
                 reward[p2_idx] = 1
                 reward[p1_idx] = -1
-            reward *= eq_idx
+            # reward *= (1 - eq_idx)
         else:
             if not attacker:
                 reward[p1_idx] = 1
-                reward[p2_idx] = 1
+                # reward[p2_idx] = 1
             else:
-                reward[p1_idx] = 1
+                # reward[p1_idx] = 1
                 reward[p2_idx] = 1
 
             reward *= (args.narguments + 1)
-            # reward *= (1 - eq_idx)
 
-        # if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
-        #     reward = (pred == y).float()
-        # else:
-        #     reward = -(pred == y).float()
 
-        return (args.reward_weightage*reward + cummilative_AS), pred
+        reward += cummilative_AS
+        if args.contrastive:
+            if not attacker:
+                reward -=rcount
+            else:
+                reward += rcount
+        else: 
+            reward -= rcount
+
+        return reward, pred
 
         
-    
-    reward_fns = [lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, False),
-                    lambda z, sidx, args, p, y: get_rewardZEROSUM(z, sidx, args, p, y, True)]
+    # reward_fns = [lambda z, sidx, args, p, y:  (1.0*(p[0] == y), y), #get_rewardZEROSUM(z, sidx, args, p, y, False),
+    #                 lambda z, sidx, args, p, y:  (1.0*(p[1] == y), y)] #get_rewardZEROSUM(z, sidx, args, p, y, True)]
+    reward_fns = [lambda z, sidx, args, p, y:  get_rewardZEROSUM(z, sidx, args, p, y, False),
+                    lambda z, sidx, args, p, y:  get_rewardZEROSUM(z, sidx, args, p, y, True)]
     model.reward_fns = reward_fns
 
 
