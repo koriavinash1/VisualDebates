@@ -36,7 +36,9 @@ class weightConstraint2(object):
             module.weight.data=w
 
 
-class VectorQuantizer2DHS(nn.Module):
+
+
+class VectorQuantizer(nn.Module):
     """
     Improved version over VectorQuantizer, can be used as a drop-in replacement. Mostly
     avoids costly matrix multiplications and allows for post-hoc remapping of indices.
@@ -61,83 +63,59 @@ class VectorQuantizer2DHS(nn.Module):
         # unknown_index="random",
         # legacy=True, 
 
-        remap = args.remap
-        unknown_index = args.unknown_index
+        # remap = args.remap
+        # unknown_index = args.unknown_index
         self.n_e = args.nconcepts
         self.e_dim = args.cdim
         self.beta = args.beta
-        self.legacy = args.legacy
         self.use_gpu = args.use_gpu
-        self.disentangle = args.disentangle
+        self.legacy = args.legacy
 
-        self.epsilon = 1e-4
-        self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
-        self.min_norm = 1e-15
+
+
+        # self.epsilon = 1e-4
+        # self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
+        # self.min_norm = 1e-15
+
+
         # uniformly sampled initialization
-        sphere = Hypersphere(dim=self.e_dim - 1)
         self.embedding = nn.Embedding(self.n_e, 
                                         self.e_dim)
+        self.embedding.weight.data.uniform_(-1 / self.n_e, 1 / self.n_e)
 
 
-        points_in_manifold = torch.Tensor(sphere.random_uniform(n_samples=self.n_e))
-        self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
 
 
-        self.hsreg = lambda x: torch.cat([ torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
-        self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.embedding.weight.device)
-        self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
+        # points_in_manifold = torch.Tensor(np.random.uniform(0, 1, (self.n_e, self.edim)))
+        # self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
+        # self.hsreg = lambda x: torch.cat([ torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
+        # self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.embedding.weight.device)
+        # self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
         
 
+
+
         # remap
-        self.remap = remap
-        if self.remap is not None:
-            self.register_buffer("used", torch.tensor(np.load(self.remap)))
-            self.re_embed = self.used.shape[0]
-            self.unknown_index = unknown_index # "random" or "extra" or integer
-            if self.unknown_index == "extra":
-                self.unknown_index = self.re_embed
-                self.re_embed = self.re_embed+1
+        # self.remap = remap
+        # if self.remap is not None:
+        #     self.register_buffer("used", torch.tensor(np.load(self.remap)))
+        #     self.re_embed = self.used.shape[0]
+        #     self.unknown_index = unknown_index # "random" or "extra" or integer
+        #     if self.unknown_index == "extra":
+        #         self.unknown_index = self.re_embed
+        #         self.re_embed = self.re_embed+1
 
-            print(f"Remapping {self.n_e} indices to {self.re_embed} indices. "
-                  f"Using {self.unknown_index} for unknown indices.")
-        else:
-            self.re_embed = self.n_e
+        #     print(f"Remapping {self.n_e} indices to {self.re_embed} indices. "
+        #           f"Using {self.unknown_index} for unknown indices.")
+        # else:
+        #     self.re_embed = self.n_e
+        # self.clamp_class = Clamp()
 
-        self.clamp_class = Clamp()
-
-
-    def remap_to_used(self, inds):
-        ishape = inds.shape
-        assert len(ishape)>1
-        inds = inds.reshape(ishape[0],-1)
-        used = self.used.to(inds)
-        match = (inds[:,:,None]==used[None, None,...]).long()
-        new = match.argmax(-1)
-        unknown = match.sum(2)<1
-        if self.unknown_index == "random":
-            r = torch.randint(0, self.re_embed,size=new[unknown].shape)
-            if self.use_gpu:
-                r.cuda()
-
-            new[unknown] = r
-        else:
-            new[unknown] = self.unknown_index
-        return new.reshape(ishape)
 
     def HLoss(self, x):
         b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
         b = -1.0 * b.sum()
         return b
-
-    def unmap_to_all(self, inds):
-        ishape = inds.shape
-        assert len(ishape)>1
-        inds = inds.reshape(ishape[0],-1)
-        used = self.used.to(inds)
-        if self.re_embed > self.used.shape[0]: # extra token
-            inds[inds>=self.used.shape[0]] = 0 # simply set to zero
-        back=torch.gather(used[None,:][inds.shape[0]*[0],:], 1, inds)
-        return back.reshape(ishape)
 
     def forward(self, z,
                     temp=None, 
@@ -151,20 +129,20 @@ class VectorQuantizer2DHS(nn.Module):
 
 
         # intra distance (gdes-distance) between codebook vector 
-        d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
-        ed1 = torch.tensor(self.ed(self.embedding.weight))
-        ed1 = ed1.repeat(self.n_e, 1)
-        ed2 = ed1.transpose(0,1)
-        ed3 = ed1 * ed2
-        edx = d1/ed3
-        if self.use_gpu: edx = edx.cuda()
-        edx = torch.clamp(edx, min=-0.99999, max=0.99999)
-        d1 = torch.acos(edx)
+        # d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
+        # ed1 = torch.tensor(self.ed(self.embedding.weight))
+        # ed1 = ed1.repeat(self.n_e, 1)
+        # ed2 = ed1.transpose(0,1)
+        # ed3 = ed1 * ed2
+        # edx = d1/ed3
+        # if self.use_gpu: edx = edx.cuda()
+        # edx = torch.clamp(edx, min=-0.99999, max=0.99999)
+        # d1 = torch.acos(edx)
         
 
-        min_distance = torch.kthvalue(d1, 2, 0)
-        total_min_distance = torch.mean(min_distance[0])
-        codebookvariance = torch.mean(torch.var(d1, 1))
+        # min_distance = torch.kthvalue(d1, 2, 0)
+        # total_min_distance = torch.mean(min_distance[0])
+        # codebookvariance = torch.mean(torch.var(d1, 1))
 
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
@@ -176,8 +154,8 @@ class VectorQuantizer2DHS(nn.Module):
 
         z_q = self.embedding(min_encoding_indices).view(z.shape)
 
-        hsw = self.hsreg(self.embedding.weight)
-        hsw = torch.mean(torch.square(self.r - hsw))
+        # hsw = self.hsreg(self.embedding.weight)
+        # hsw = torch.mean(torch.square(self.r - hsw))
 
         # compute loss for embedding
         if not self.legacy:
@@ -188,10 +166,10 @@ class VectorQuantizer2DHS(nn.Module):
             loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
 
 
-        disentanglement_loss = codebookvariance - total_min_distance
-        if self.disentangle:
-            loss += hsw
-            loss += disentanglement_loss
+        # disentanglement_loss = codebookvariance - total_min_distance
+        # if self.disentangle:
+        #     loss += hsw
+        #     loss += disentanglement_loss
 
 
         # preserve gradients
@@ -204,11 +182,7 @@ class VectorQuantizer2DHS(nn.Module):
 
 
         return (z_q, loss,
-                    (sampled_idx, min_encoding_indices.view(z.shape[0], -1)), 
-                    codebookvariance, 
-                    total_min_distance,  
-                    hsw, 
-                    torch.mean(self.r))
+                    (sampled_idx, min_encoding_indices.view(z.shape[0], -1)))
 
 
 

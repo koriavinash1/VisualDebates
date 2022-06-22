@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os, json
 import torchnet as tnt
 from src.clsmodel import afhq, mnist, stl10, shapes
-from src.modules import QClassifier, VectorQuantizer2DHS
+from src.modules import QClassifier, VectorQuantizer
 
 def set_requires_grad(model, bool):
     for p in model.parameters():
@@ -80,7 +80,7 @@ class Debate(nn.Module):
         # grad setting...
         set_requires_grad(self.judge, False)
 
-        self.discretizer = VectorQuantizer2DHS(args)
+        self.discretizer = VectorQuantizer(args)
         self.quantized_classifier = QClassifier(args.nfeatures, args.n_class)
         if self.contrastive:
             self.quantized_classifier.eval()
@@ -94,9 +94,8 @@ class Debate(nn.Module):
 
 
     def fext(self, x):
-        z, loss, (onehot_symbols, symbol_idx), \
-            cbvar,  tdis, hsw, r = self.discretizer(self.judge.features(x))
-        return z.detach(), symbol_idx, loss, cbvar, tdis, hsw, r
+        z, loss, (onehot_symbols, symbol_idx) = self.discretizer(self.judge.features(x))
+        return z.detach(), symbol_idx, loss, 
 
 
     def step(self, z, symbol_idxs, y):
@@ -162,7 +161,7 @@ class Debate(nn.Module):
         """
         # b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
         b = torch.max(F.softmax(x, dim=1), dim=1)[0] # * F.log_softmax(x, dim=1)
-        return torch.mean(b)
+        return 1 - torch.mean(b)
 
 
     def DDistance(self, dists, arguments, ai):
@@ -177,19 +176,19 @@ class Debate(nn.Module):
 
         if ai == 0: 
             dist_ = torch.norm(dist0tilde - dist1tilde.detach(), 1)
-            inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0),
-                                                    arguments[1].unsqueeze(0).detach()], 0), 0))
+            # inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0),
+            #                                         arguments[1].unsqueeze(0).detach()], 0), 0))
             intra_variance = torch.mean(torch.var(arguments[0], 1))
         else:
             dist_ = torch.norm(dist0tilde.detach() - dist1tilde, 1)
-            inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0).detach(),
-                                                    arguments[1].unsqueeze(0)], 0), 0))
+            # inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0).detach(),
+            #                                         arguments[1].unsqueeze(0)], 0), 0))
             intra_variance = torch.mean(torch.var(arguments[1], 1))
 
         distance = 0.1*torch.mean(dist_)
 
 
-        return distance, (inter_variance, intra_variance)
+        return distance, (0, intra_variance)
 
 
     def forward(self, x, y, lts, is_training=False, epoch=1):
@@ -217,7 +216,7 @@ class Debate(nn.Module):
         # quantized distillation
         if not self.contrastive:
             self.quantized_optimizer.zero_grad()
-            z_orig, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+            z_orig, symbol_idxs, qloss = self.fext(x)
             z = F.adaptive_avg_pool2d(z_orig , (1, 1)).squeeze()
             cqlog_probs = self.quantized_classifier(z)
             cq_loss = F.nll_loss(cqlog_probs, jpred)
@@ -226,7 +225,7 @@ class Debate(nn.Module):
             self.quantized_optimizer.step()
         else:
             with torch.no_grad():
-                z_orig, symbol_idxs, qloss, cbvar, dis, hsw, r = self.fext(x)
+                z_orig, symbol_idxs, qloss = self.fext(x)
                 z = F.adaptive_avg_pool2d(z_orig , (1, 1)).squeeze()
                 cqlog_probs = self.quantized_classifier(z)
 
@@ -266,7 +265,7 @@ class Debate(nn.Module):
             if self.contrastive:
                 loss_classifier = 0.0 #1 * F.nll_loss(log_prob_agents[ai], jpred)
             else:
-                loss_classifier = 10 * F.nll_loss(log_prob_agents[ai], jpred)
+                loss_classifier = 1 * F.nll_loss(log_prob_agents[ai], jpred)
 
 
             # Baseline Loss
@@ -289,9 +288,9 @@ class Debate(nn.Module):
             inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
             
             if self.contrastive:
-                regularization_loss = -intra_loss - inter_dis - divergance[0] - divergance[1]
+                regularization_loss = intra_loss - inter_dis - divergance[0] - divergance[1]
             else:
-                regularization_loss = .1*(-intra_loss- divergance[1]) + inter_dis + divergance[0] 
+                regularization_loss = intra_loss - divergance[1] + inter_dis + divergance[0] 
             
 
             loss = (loss_reinforce + loss_baseline) +\
@@ -350,7 +349,7 @@ class Debate(nn.Module):
         jpred = torch.argmax(jpred_probs, 1)
 
 
-        z_orig, symbol_idxs_, qloss, cbvar, dis, hsw, r = self.fext(x)
+        z_orig, symbol_idxs_, qloss = self.fext(x)
 
         z_ = F.adaptive_avg_pool2d(z_orig, (1,1)).squeeze()
         cqlog_probs = self.quantized_classifier(z_)
@@ -410,7 +409,7 @@ class Debate(nn.Module):
             if self.contrastive:
                 loss_classifier = 0.0 #1 * F.nll_loss(log_prob_agents[ai], jpred)
             else:
-                loss_classifier = 10.0 * F.nll_loss(log_prob_agents[ai], jpred)
+                loss_classifier = 1.0 * F.nll_loss(log_prob_agents[ai], jpred)
             
             
             # Prediction Loss & Reward
@@ -436,9 +435,9 @@ class Debate(nn.Module):
             inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
 
             if self.contrastive:
-                regularization_loss = - intra_loss - inter_dis - divergance[0] - divergance[1]
+                regularization_loss = intra_loss - inter_dis - divergance[0] - divergance[1]
             else:
-                regularization_loss = .1*(- intra_loss - divergance[1]) + inter_dis + divergance[0] 
+                regularization_loss = intra_loss - divergance[1] + inter_dis + divergance[0] 
 
             loss = (loss_reinforce + loss_baseline) +\
                      loss_classifier + 1.0*regularization_loss

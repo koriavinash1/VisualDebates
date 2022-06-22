@@ -6,7 +6,7 @@ sbatch <<EOT
 #SBATCH -p gpus                    # Partition (queue) 
 #SBATCH --gres gpu:1               # gpu:n, where n = number of GPUs 
 #SBATCH --mem 32G                  # memory pool for all cores 
-#SBATCH --output=LogsS2-slurm.%N.%j.log   # Standard output and error loga
+#SBATCH --output=LogsS1-slurm.%N.%j.log   # Standard output and error loga
 
 echo $1, $2, $3, $4, $5
 
@@ -16,6 +16,8 @@ conda activate dscm
 
 if [ "$1" = "AFHQ" ]; then
     ./AFHQtraining.sh $2 $3 $4 $5
+elif [ "$1" = "SHAPES" ]; then
+    ./SHAPEStraining.sh $2 $3 $4 $5
 else
     ./MNISTtraining.sh $2 $3 $4 $5
 fi

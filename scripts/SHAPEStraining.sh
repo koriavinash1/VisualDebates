@@ -29,7 +29,7 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --print_freq=50 \
         --plot_freq=1 \
         --n_class=4 \
-        --init_lr=2e-5 \
+        --init_lr=1e-4 \
         --contrastive=True \
         --resume=True \
         --nfeatures=32 \
@@ -39,3 +39,9 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --nconcepts=$4
                     
 echo Debate Completed
+
+python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/src/plots.py \
+       --plot_dir /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsSS2/SHAPES/debate/plots/Exp-test-Debate:GRU_$1_$4_$2_$3_1/Exp-test-Debate:GRU_$1_$4_$2_$3_1 \
+       --start_epoch 0 \
+       --start_epoch 39 \
+       --split_epoch 24

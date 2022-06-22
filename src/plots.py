@@ -18,6 +18,10 @@ def parse_arguments():
                      help="path to directory containing pickle dumps")
     arg.add_argument("--start_epoch", type=int, default=0,
                      help="epoch of desired plot")
+    arg.add_argument("--stop_epoch", type=int, default=0,
+                     help="epoch of desired plot")
+    arg.add_argument("--split_epoch", type=int, default=0,
+                     help="epoch of desired plot")
     arg.add_argument("--nagents", type=int, default=2,
                      help="Total number of agents in a debate")
     arg.add_argument("--name", type=str, default='', 
@@ -54,7 +58,7 @@ def get_properties(pred, y, arguments):
         # print("====================")
         # print (p1_class_arguments, p2_class_arguments)
         total_unqiue = len(np.unique(list(p1_class_arguments) + list(p2_class_arguments))) - 1
-        d = (1./(total_unqiue*np.sum(class_idx))) * np.sum((p1_class_arguments != p2_class_arguments)*(p1_class_arguments > 0)*(p2_class_arguments > 0))
+        d = (1./(total_unqiue*np.sum(class_idx))) * (-1 + np.sum((p1_class_arguments != p2_class_arguments)))
         zr_.append(d)
     zr_ = np.mean(zr_)
    
@@ -167,8 +171,8 @@ def main_image(args, epoch, plot=False):
                                                                         logs_data['outcome'][imgidx//2])
             if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
             if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
-            if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
-            if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
+            # if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
+            # if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
 
             for aidx in range(args.nagents):
                 # aidx = 1 - aidx
@@ -248,8 +252,9 @@ if __name__ == "__main__":
     acc_cubic = interp1d(epochs[:-3], ma(accs), kind='cubic', fill_value="extrapolate")
 
 
-    plt.clf()
     n = 10
+    plt.clf()
+    plt.figure(figsize=(6,6))
     plt.plot(xnew[:-n], normalize_plot(zr_cubic(xnew))[:-n], c='b', label='$Z_R$')
     plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='r', label ='$\mathcal{{AH}}$' )
     plt.plot(xnew[:-n], normalize_plot(ad_cubic(xnew))[:-n], c='k', label = '$\mathcal{{AD}}$')
