@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os, json
 import torchnet as tnt
 from src.clsmodel import afhq, mnist, stl10, shapes
-from src.modules import QClassifier, VectorQuantizer
+from src.modules import QClassifier, VectorQuantizer, GumbelQuantizer
 
 def set_requires_grad(model, bool):
     for p in model.parameters():
@@ -80,13 +80,27 @@ class Debate(nn.Module):
         # grad setting...
         set_requires_grad(self.judge, False)
 
-        self.discretizer = VectorQuantizer(args)
-        self.quantized_classifier = QClassifier(args.nfeatures, args.n_class)
+        # common model def.============================
+        if not args.gumbel:
+            self.discretizer = VectorQuantizer(args)
+            print ('Using traditional VQ')
+        else:
+            self.discretizer = GumbelQuantizer(args)
+            print ('Using Gumbel VQ sampler')
+
+        self.quantized_classifier = QClassifier(args.nfeatures, 
+                                                    args.n_class)
+
+        # ==============================================
+
         if self.contrastive:
             self.quantized_classifier.eval()
             self.discretizer.eval()
             set_requires_grad(self.discretizer, False)
             set_requires_grad(self.quantized_classifier, False)
+
+            for i in range(self.nagents):
+                set_requires_grad(self.agents[i].classifier, False)
         else:
             self.quantized_optimizer = torch.optim.Adam (list(self.discretizer.parameters()) + \
                                                     list(self.quantized_classifier.parameters()), 
@@ -95,7 +109,7 @@ class Debate(nn.Module):
 
     def fext(self, x):
         z, loss, (onehot_symbols, symbol_idx) = self.discretizer(self.judge.features(x))
-        return z.detach(), symbol_idx, loss, 
+        return z.clone().detach(), symbol_idx, loss, 
 
 
     def step(self, z, symbol_idxs, y):
@@ -246,9 +260,14 @@ class Debate(nn.Module):
         arguments = []; log_prob_agents = []; claims = []
         for ai, agent in enumerate(self.agents):
             argument  = self.reformat(args_idx_t, ai)
-            log_prob_agent = agent.classifier(z, argument, h_t[ai][0])
 
-            claims.append(torch.argmax(F.softmax(log_prob_agent.clone()).detach(), 1))
+            if not self.contrastive:
+                log_prob_agent = agent.classifier(z, argument, h_t[ai][0])
+            else:
+                with torch.no_grad():
+                    log_prob_agent = agent.classifier(z, argument, h_t[ai][0])
+
+            claims.append(torch.argmax(F.softmax(log_prob_agent.clone(), -1).detach(), 1))
             log_prob_agents.append(log_prob_agent)
             arguments.append(argument)
 
@@ -382,7 +401,7 @@ class Debate(nn.Module):
             log_prob_agent = log_prob_agent.contiguous().view(self.M, -1, log_prob_agent.shape[-1])
             log_prob_agent = torch.mean(log_prob_agent, dim=0)
 
-            claims.append(torch.argmax(F.softmax(log_prob_agent), 1))
+            claims.append(torch.argmax(F.softmax(log_prob_agent, -1), 1))
             log_prob_agents.append(log_prob_agent)
             arguments.append(_argument_)       
 

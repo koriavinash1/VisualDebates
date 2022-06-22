@@ -25,6 +25,7 @@ class RecurrentAttentionAgent(nn.Module):
                                         args.nconcepts)
 
         self.__init_optimizer(args.init_lr)
+        self.classifier = self.ram_net.classifier
 
     def init_argument(self, batch_size):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
@@ -51,5 +52,3 @@ class RecurrentAttentionAgent(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-    def classifier(self, *args):
-        return self.ram_net.classifier(*args)

@@ -37,10 +37,11 @@ def parse_args():
     vq_network_arg.add_argument('--nfeatures', type=int, default=64, help='total number of sampled discrete symbols for every image')
     vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
     vq_network_arg.add_argument('--beta', type=float, default=0.9, help='component of quantization loss')
-    vq_network_arg.add_argument('--disentangle', type=bool, default=False, help='enforces disentanglement with addditional regularizations')
-    vq_network_arg.add_argument('--remap', default=None, help='for remapping idx ot desired dimension')
-    vq_network_arg.add_argument('--unknown_index', type=str, default="random", help='remap parameter')
     vq_network_arg.add_argument('--legacy', type=bool, default=True, help='use previously predicted info')
+    vq_network_arg.add_argument('--gumbel', type=bool, default=False, help='use gumbel sampler')
+    vq_network_arg.add_argument('--sigma', type=float, default=0.1, help='default sd for kl divergance')
+    vq_network_arg.add_argument('--temperature', type=float, default=1.0, help='default temperature for gumbel softmax sampler')
+    vq_network_arg.add_argument('--modulated_channels', type=int, default=64, help='adjust total number of features before quantization')
 
 
     # core_network params

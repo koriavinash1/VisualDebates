@@ -15,25 +15,97 @@ from einops import rearrange
 from torch.distributions import Categorical
 
 
-class Clamp(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, input):
-        return input.clamp(min=0.9, max=1.1) # the value in iterative = 2
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.clone()
+class GumbelQuantizer(nn.Module):
+    """
+    credit to @karpathy: https://github.com/karpathy/deep-vector-quantization/blob/main/model.py (thanks!)
+    Gumbel Softmax trick quantizer
+    Categorical Reparameterization with Gumbel-Softmax, Jang et al. 2016
+    https://arxiv.org/abs/1611.01144
+    """
+    def __init__(self, args):
+        super().__init__()
 
-class weightConstraint2(object):
-    def __init__(self):
-        pass
+        # n_e = 128, 
+        # e_dim = 16, 
+        # beta = 0.9, 
+        # ignorezq = False,
+        # disentangle = True,
+        # remap=None, 
+        # unknown_index="random",
+        # sane_index_shape=False, 
+        # legacy=True, 
+        # sigma = 0.1,
+        # straight_through=True,
+        # kl_weight=5e-4, 
+        # temp_init=1.0
 
-    def __call__(self,module):
-        if hasattr(module,'weight'):
-            w=module.weight.data
-            w = torch.heaviside(w, torch.tensor([0.0]))
-            x = w.shape[0]
-            module.weight.data=w
+
+        self.n_e = args.nconcepts
+        self.e_dim = args.cdim
+        self.beta = args.beta
+        self.legacy = args.legacy
+        self.sigma = args.sigma
+        self.use_gpu = args.use_gpu
+        self.temperature = args.temperature
+        self.modulated_channels = args.modulated_channels
+        self.straight_through = True
+
+        # self.nfeatures = args.nfeatures
+        # self.modulated_channels = args.modulated_channels
+
+
+        # self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
+        #                                self.modulated_channels,
+        #                                kernel_size=1,
+        #                                stride=1,
+        #                                )
+
+        self.proj = nn.Linear(self.e_dim, self.n_e, 1)
+        self.embedding = nn.Embedding(self.n_e, self.e_dim)
+        self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
+
+
+    def forward(self, z,
+                    temp=None, 
+                    rescale_logits=False, 
+                    return_logits=False):
+        # force hard = True when we are in eval mode, as we must quantize. 
+        # actually, always true seems to work
+
+
+        # z = self.dis_modulator(z)
+        batch_size = z.shape[0]
+
+        assert rescale_logits==False, "Only for interface compatible with Gumbel"
+        assert return_logits==False, "Only for interface compatible with Gumbel"
+        
+        z_flattened = z.view(-1, self.e_dim)
+        cb = self.embedding.weight
+
+        hard = self.straight_through if self.training else True
+        temp = self.temperature if temp is None else temp
+
+        logits = self.proj(z_flattened)
+
+        soft_one_hot = F.gumbel_softmax(logits, tau=temp, dim=1, hard=hard)
+        
+
+        z_q = torch.einsum('b n, n d -> b d', soft_one_hot, cb)
+        z_q = z_q.view(z.shape)
+
+        # + kl divergence to the prior loss
+        qy = F.softmax(logits, dim=1)
+        kl_loss = torch.sum(qy * torch.log(qy + 1e-10), dim=1).mean()
+
+        ind = soft_one_hot.argmax(dim=1)
+
+        sampled_idx = torch.zeros(batch_size*self.n_e).to(z.device)
+        sampled_idx[ind] = 1
+        sampled_idx = sampled_idx.view(batch_size, self.n_e)
+
+        return (z_q, kl_loss,
+                    (sampled_idx, ind.view(batch_size, -1)))
 
 
 
@@ -70,8 +142,15 @@ class VectorQuantizer(nn.Module):
         self.beta = args.beta
         self.use_gpu = args.use_gpu
         self.legacy = args.legacy
+        self.nfeatures = args.nfeatures
+        # self.modulated_channels = args.modulated_channels
 
 
+        # self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
+        #                                self.modulated_channels,
+        #                                kernel_size=1,
+        #                                stride=1,
+        #                                )
 
         # self.epsilon = 1e-4
         # self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
@@ -113,15 +192,19 @@ class VectorQuantizer(nn.Module):
 
 
     def HLoss(self, x):
+        x = x.view(-1, self.nfeatures, x.shape[-1]).mean(-1)
         b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
-        b = -1.0 * b.sum()
-        return b
+        b = -1.0 * b.sum(dim = 1)
+        return torch.mean(b)
 
     def forward(self, z,
                     temp=None, 
                     rescale_logits=False, 
                     return_logits=False):
         
+
+        # z = self.dis_modulator(z)
+
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
         assert return_logits==False, "Only for interface compatible with Gumbel"
@@ -165,6 +248,8 @@ class VectorQuantizer(nn.Module):
             loss = torch.mean((z_q.detach() - z) ** 2)  
             loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
 
+
+        loss = self.HLoss(z_q) #self.embedding.weight)
 
         # disentanglement_loss = codebookvariance - total_min_distance
         # if self.disentangle:
