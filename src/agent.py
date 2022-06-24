@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 from src.modules import PlayerNet
+
 torch.autograd.set_detect_anomaly(True)
 
 class RecurrentAttentionAgent(nn.Module):
@@ -13,7 +14,7 @@ class RecurrentAttentionAgent(nn.Module):
         """
         super(RecurrentAttentionAgent, self).__init__()
         self.use_gpu = args.use_gpu
-        self.nfeatures = args.nfeatures
+        self.nfeatures = args.modulated_channels
         self.M = args.M
 
         self.ram_net = PlayerNet(args)

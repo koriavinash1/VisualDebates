@@ -8,6 +8,8 @@ import torch
 import shutil
 
 from src.tflogger import TFLogger
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 
 
 class Callback(object):
@@ -138,32 +140,41 @@ class ModelCheckpoint(Callback):
 
     def on_epoch_end(self, epoch, logs={}):
         state = {'epoch': epoch}
+        
+        for k, v in logs.items():
+            state[k] = v
 
         state.update(self.model.get_state_dict())
         torch.save(state, self.ckpt_path)
 
         if logs[self.monitor_val] > self.best_val_acc:
-            self.best_val_acc = logs[self.monitor_val]
             shutil.copyfile(self.ckpt_path, self.ckpt_path + '_best')
+            print ("Model saved: epoch: {}, acc:{}, last-max-acc: {}, path: {}".format(epoch, logs[self.monitor_val], self.best_val_acc, self.ckpt_path))
+            self.best_val_acc = logs[self.monitor_val]
 
 
 class LearningRateScheduler(Callback):
-    def __init__(self, model, factor, patience, mode, monitor_val):
+    def __init__(self, optimizer, factor, patience, mode, monitor_val,verbose=True):
         
-        
-        self.scheduler = model.lr_schedular(factor = factor,
+        self.scheduler = None
+        if not (optimizer is None):
+            self.scheduler = ReduceLROnPlateau(optimizer,
+                                            factor=factor,
                                             patience=patience,
-                                            mode = mode)
-        
+                                            mode = mode,
+                                            verbose=verbose)
+        print("LR schedular included....")
         self.monitor_val = monitor_val
+        self.best_val_loss = 1000.0
+        self.counter = 0
+
 
     def on_epoch_end(self, epoch, logs):
-        if isinstance(self.scheduler, list):
-            for ai, schedular in enumerate(self.scheduler):
-                schedular.step(logs[self.monitor_val])
-        else:
+
+        if not (self.scheduler is None):
             self.scheduler.step(logs[self.monitor_val])
 
+        
 
 class EarlyStopping(Callback):
     '''Stop training when a monitored quantity has stopped improving.

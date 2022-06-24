@@ -4,6 +4,7 @@ from src.utils import AverageMeter
 import torch
 
 
+
 class Trainer(object):
     """
     Trainer encapsulates all the logic necessary for training.
@@ -85,6 +86,17 @@ class Trainer(object):
                             val_log[name].update(metric[key].item(), x.size()[0])
 
 
+        # TODO: remove the hard-coding here-----
+        # cqloss = val_log['0_cqloss'].avg
+        # p1loss = val_log['0_loss'].avg
+        # p2loss = val_log['1_loss'].avg
+
+        # if not (self.model.quantized_lr_sch is None):
+        #     self.model.quantized_lr_sch.step(cqloss)
+        # self.model.agents[0].lr_sch.step(p1loss)
+        # self.model.agents[1].lr_sch.step(p2loss)
+
+        #-----------------------------------------------
         return {'val_'+name: meter.avg for name, meter in val_log.items()}
 
     @torch.no_grad()

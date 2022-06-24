@@ -143,14 +143,17 @@ class VectorQuantizer(nn.Module):
         self.use_gpu = args.use_gpu
         self.legacy = args.legacy
         self.nfeatures = args.nfeatures
-        # self.modulated_channels = args.modulated_channels
+        self.modulated_channels = args.modulated_channels
 
 
-        # self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
-        #                                self.modulated_channels,
-        #                                kernel_size=1,
-        #                                stride=1,
-        #                                )
+        self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
+                                       self.modulated_channels,
+                                       kernel_size=1,
+                                       stride=1,
+                                       )
+        self.norm = nn.BatchNorm2d(self.modulated_channels, affine=True)
+
+        print ("USING CB MODULATOR..............")
 
         # self.epsilon = 1e-4
         # self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
@@ -163,7 +166,8 @@ class VectorQuantizer(nn.Module):
         self.embedding.weight.data.uniform_(-1 / self.n_e, 1 / self.n_e)
 
 
-
+        # contrastive loss
+        # self.contrastive_loss = SimCLR_Loss()
 
         # points_in_manifold = torch.Tensor(np.random.uniform(0, 1, (self.n_e, self.edim)))
         # self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
@@ -202,8 +206,9 @@ class VectorQuantizer(nn.Module):
                     rescale_logits=False, 
                     return_logits=False):
         
+        z = self.dis_modulator(z)
+        # z = self.norm(z)
 
-        # z = self.dis_modulator(z)
 
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
@@ -249,7 +254,14 @@ class VectorQuantizer(nn.Module):
             loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
 
 
-        loss = self.HLoss(z_q) #self.embedding.weight)
+
+        # contrastive_sum = 0
+        # for i in range(0, z.shape[1]):
+        #     for j in range(i, z.shape[1]): # symmetric loss function
+        #         contrastive_sum += F.cosine_similarity(z[:, i, ...].view(-1, self.e_dim), 
+        #                                                     z[:, j, ...].view(-1, self.e_dim)).mean()
+        # loss += contrastive_sum
+        # loss = self.HLoss(z_q) #self.embedding.weight)
 
         # disentanglement_loss = codebookvariance - total_min_distance
         # if self.disentangle:
@@ -482,7 +494,7 @@ class PolicyNet(nn.Module):
                                             decision_info, 
                                             history), dim=1))
 
-        return F.softmax(logits)
+        return F.softmax(logits, -1)
 
 
 
@@ -567,18 +579,18 @@ class PlayerNet(nn.Module):
         self.rnn = core_network(args.rnn_input_size, 
                                     args.rnn_hidden, 
                                     args.use_gpu)
-        self.modulator_net = ModulatorNet(input_size = args.nfeatures, 
+        self.modulator_net = ModulatorNet(input_size = args.modulated_channels, 
                                         output_size = args.rnn_input_size,
                                         use_gpu = args.use_gpu)
         self.policy_net = PolicyNet(concept_size = args.cdim, 
-                                    input_size = args.nfeatures, 
-                                    output_size = args.nfeatures, 
+                                    input_size = args.modulated_channels, 
+                                    output_size = args.modulated_channels, 
                                     hidden_size = args.rnn_hidden,
                                     nclasses = args.n_class,
                                     use_gpu = args.use_gpu)
 
 
-        self.classifier = PlayerClassifier(args.nfeatures, args.rnn_hidden, args.num_class)
+        self.classifier = PlayerClassifier(args.modulated_channels, args.rnn_hidden, args.num_class)
         self.baseline_net = BaselineNet(args.rnn_hidden, 1)
 
 
@@ -616,3 +628,99 @@ class PlayerNet(nn.Module):
         b_t = self.baseline_net(h_t[0]).squeeze()
 
         return h_t, arg_current_one_hot, b_t, log_pi, argument_prob
+
+
+# loss functions
+# directly taken from https://zablo.net/blog/post/understanding-implementing-simclr-guide-eli5-pytorch/
+class ContrastiveLossELI5(nn.Module):
+    def __init__(self, temperature=0.5, verbose=False):
+        super().__init__()
+        self.register_buffer("temperature", torch.tensor(temperature))
+        self.verbose = verbose
+            
+    def forward(self, emb_i, emb_j):
+        """
+        emb_i and emb_j are batches of embeddings, where corresponding indices are pairs
+        z_i, z_j as per SimCLR paper
+        """
+        batch_size = emb_i.shape[0]
+        z_i = F.normalize(emb_i, dim=1)
+        z_j = F.normalize(emb_j, dim=1)
+
+        representations = torch.cat([z_i, z_j], dim=0)
+        similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
+        if self.verbose: print("Similarity matrix\n", similarity_matrix, "\n")
+            
+        def l_ij(i, j):
+            z_i_, z_j_ = representations[i], representations[j]
+            sim_i_j = similarity_matrix[i, j]
+            if self.verbose: print(f"sim({i}, {j})={sim_i_j}")
+                
+            numerator = torch.exp(sim_i_j / self.temperature)
+            one_for_not_i = torch.ones((2 * batch_size, )).to(emb_i.device).scatter_(0, torch.tensor([i]).to(emb_i.device), 0.0)
+            if self.verbose: print(f"1{{k!={i}}}",one_for_not_i)
+            
+            denominator = torch.sum(
+                one_for_not_i * torch.exp(similarity_matrix[i, :] / self.temperature)
+            )    
+            if self.verbose: print("Denominator", denominator)
+                
+            loss_ij = torch.log(numerator / denominator)
+            # loss_ij = -torch.log(numerator / denominator)
+            if self.verbose: print(f"loss({i},{j})={loss_ij}\n")
+                
+            return loss_ij.squeeze(0)
+
+        N = batch_size
+        loss = 0.0
+        for k in range(0, N):
+            loss += l_ij(k, k + N) + l_ij(k + N, k)
+        return 1.0 / (2*N) * loss
+
+
+
+class SimCLR_Loss(nn.Module):
+    def __init__(self, max_batch_size=64, temperature=0.5):
+        super(SimCLR_Loss, self).__init__()
+        self.temperature = temperature
+
+        self.mask = self.mask_correlated_samples(max_batch_size)
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
+        self.similarity_f = nn.CosineSimilarity(dim=2)
+
+    def mask_correlated_samples(self, batch_size):
+        N = 2 * batch_size
+        mask = torch.ones((N, N), dtype=bool)
+        mask = mask.fill_diagonal_(0)
+        
+        for i in range(batch_size):
+            mask[i, batch_size + i] = 0
+            mask[batch_size + i, i] = 0
+        return mask
+
+    def forward(self, z_i, z_j):
+        
+        batch_size = z_i.shape[0]
+
+
+        N = 2 * batch_size
+
+        z = torch.cat((z_i, z_j), dim=0)
+
+        sim = self.similarity_f(z.unsqueeze(1), z.unsqueeze(0)) / self.temperature
+
+        sim_i_j = torch.diag(sim, batch_size)
+        sim_j_i = torch.diag(sim, -batch_size)
+        
+        # We have 2N samples, but with Distributed training every GPU gets N examples too, resulting in: 2xNxN
+        positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0).reshape(N, 1)
+        negative_samples = sim[self.mask].reshape(N, -1)
+        
+        #SIMCLR
+        labels = torch.from_numpy(np.array([0]*N)).reshape(-1).to(positive_samples.device).long() #.float()
+        
+        logits = torch.cat((positive_samples, negative_samples), dim=1)
+        loss = self.criterion(logits, labels)
+        loss /= N
+        
+        return loss

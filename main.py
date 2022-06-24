@@ -68,7 +68,7 @@ def parse_args():
     train_arg.add_argument('--epochs', type=int, default=25, help='# of epochs to train for')
     train_arg.add_argument('--patience', type=int, default=5, help='Max # of epochs to wait for no validation improv')
     train_arg.add_argument('--momentum', type=float, default=0.5, help='Nesterov momentum value')
-    train_arg.add_argument('--init_lr', type=float, default=0.0002, help='Initial learning rate value')
+    train_arg.add_argument('--init_lr', type=float, default=0.001, help='Initial learning rate value')
     train_arg.add_argument('--min_lr', type=float, default=0.000001, help='Min learning rate value')
     train_arg.add_argument('--saturate_epoch', type=int, default=150, help='Epoch at which decayed lr will reach min_lr')
 
@@ -199,32 +199,12 @@ if __name__ == '__main__':
         def __repeated_count__(arg):
             arg = torch.argmax(arg, 2)
             unique = 1.*torch.tensor([len(torch.unique(arg[:, i], dim = 0)) for i in range(arg.shape[1])]).to(arg.device)
-            return nargumets - unique
-
-
-        if args.contrastive:
-            rcount = __repeated_count__(arguments[0]) - __repeated_count__(arguments[1])
-        else:
-            rcount = torch.max(torch.cat([__repeated_count__(arguments[0]).unsqueeze(0),
-                                         __repeated_count__(arguments[1]).unsqueeze(0)], 0), 0)[0]
-        
+            return nargumets - unique     
 
 
         @torch.no_grad()
         def get_AS(z, arg1, arg2):
             orig_score = model.quantized_classifier(z)
-            # z_pertub = []
-            # for i, z_ in enumerate(z.clone()):
-            #     # arguments are onehot vectors
-            #     arg1_ = torch.argmax(arg1, 1)
-            #     arg2_ = torch.argmax(arg2, 1)
-
-            #     z_[sampled_idx[i] == sampled_idx[i][arg1_[i]]] = 0
-            #     z_[sampled_idx[i] == sampled_idx[i][arg2_[i]]] = 0
-
-            #     z_pertub.append(z_.unsqueeze(0))
-
-            # z_pertub = z - torch.cat(z_pertub, 0)
 
             z_pertub = z.clone()
             z_pertub *= torch.clip((arg1 + arg2), 0, 1)
@@ -258,8 +238,8 @@ if __name__ == '__main__':
             # masking z based on arguments..........
             z_pertub = z.clone()
 
-            arguments = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
-            debate_information = z_pertub*arguments 
+            arguments_ = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
+            debate_information = z_pertub*arguments_ 
 
 
             with torch.no_grad():
@@ -294,14 +274,26 @@ if __name__ == '__main__':
             reward *= (args.narguments + 1)
 
 
+
+
         reward += cummilative_AS
+
+
+        # enfore uniqueness in arguments......
+
         if args.contrastive:
+            rcount = __repeated_count__(arguments[0]) - __repeated_count__(arguments[1])
             if not attacker:
                 reward -=rcount
             else:
                 reward += rcount
-        else: 
+        else:
+            if attacker:
+                rcount = __repeated_count__(arguments[1])
+            else:
+                rcount = __repeated_count__(arguments[0])
             reward -= rcount
+   
 
         return reward, pred
 
@@ -334,7 +326,6 @@ if __name__ == '__main__':
 
         # best model selection method is based on acc in callback.py
         # Need to fix that before changing monitor_val
-        monitor_val = 'val_0_acc' 
         trainer.train(train_loader, val_loader,
                       start_epoch=start_epoch,
                       epochs=args.epochs,
@@ -346,14 +337,24 @@ if __name__ == '__main__':
                           # TensorBoard(model, args.log_dir),
                           ModelCheckpoint(model, 
                                             args.ckpt_dir,
-                                            monitor_val),
-                          LearningRateScheduler(model, 
+                                            'val_0_acc'),
+                          LearningRateScheduler(model.quantized_optimizer, 
                                                 factor = 0.1, 
-                                                patience = 5, 
+                                                patience = 3, 
                                                 mode = 'min', 
-                                                monitor_val = monitor_val),
+                                                monitor_val = 'val_0_cqloss'),
+                          LearningRateScheduler(model.agents[0].optimizer, 
+                                                factor = 0.1, 
+                                                patience = 3, 
+                                                mode = 'min', 
+                                                monitor_val = 'val_0_loss'),
+                          LearningRateScheduler(model.agents[1].optimizer, 
+                                                factor = 0.1, 
+                                                patience = 3, 
+                                                mode = 'min', 
+                                                monitor_val = 'val_1_loss'),
                           EarlyStopping(model, 
-                                          monitor_val,
+                                          'val_0_acc',
                                           patience=args.patience)
                       ])
     elif args.is_plot:
