@@ -58,7 +58,7 @@ def get_properties(pred, y, arguments):
         # print("====================")
         # print (p1_class_arguments, p2_class_arguments)
         total_unqiue = len(np.unique(list(p1_class_arguments) + list(p2_class_arguments))) - 1
-        d = (1./(total_unqiue*np.sum(class_idx))) * (-1 + np.sum((p1_class_arguments != p2_class_arguments)))
+        d = (1./(total_unqiue*np.sum(class_idx))) * (np.sum((p1_class_arguments != p2_class_arguments)))
         zr_.append(d)
     zr_ = np.mean(zr_)
    
@@ -84,28 +84,46 @@ def get_properties(pred, y, arguments):
 def get_arguments(x, z, sampled_idx, arguments, threshold=0.85):
     size = np.asarray(x.shape[1:-1])
     return_arguments = [] #nargs x bs
-    z = z/np.max(z)
+    argument_idx = []
+
+    print ("**************************")
+    # z = z/np.max(z)
     for ai in range(arguments.shape[1]):
-        idx = np.array([np.random.choice(arguments.shape[-1], 1, p = arguments[ii, ai,:]) for ii in range(arguments.shape[0])])[:,0] 
-        
-        z_pertub = []
+        z_pertub = [];batch_arg = []
         for i in range(z.shape[0]):
+            # sampling with poisioning
+            probabilities = arguments[i, ai,:]
+            noise = np.random.uniform(0, 0.25, probabilities.shape)
+            probabilities += noise
+            probabilities /= np.sum(probabilities)
+            idx = np.random.choice(arguments.shape[-1], 1, p = probabilities)
+
+            print (i, ai, idx)
             z_ = copy.deepcopy(z[i])
-            z_[sampled_idx[i] == sampled_idx[i][idx[i]]] = 0 
+            z_[sampled_idx[i] == sampled_idx[i][idx]] = 0 
             z_pertub.append(z_)
+            batch_arg.append(sampled_idx[i][idx])
+
         z_pertub = np.array(z_pertub)
 
-        F_cummilative = np.mean(z, 1)
-        Ft_cummilative = np.mean(z_pertub, 1)
+        # F_cummilative = np.sum(z, 1)
+        # Ft_cummilative = np.sum(z_pertub, 1)
 
         # import pdb;pdb.set_trace()
-        F = F_cummilative - Ft_cummilative
-        Bmask = F*np.uint8(F > (threshold*np.median(F)))
-        Bmask = np.array([cv2.resize(Fd, tuple(size), interpolation = cv2.INTER_CUBIC) for Fd in Bmask])
+        F = z - z_pertub #F_cummilative - Ft_cummilative
+        F = F/np.max(F)
+
+        Bmask = F*(F > np.percentile(F, threshold, 0))
+        Bmask = np.sum(Bmask, 1)
+
+        Bmask = np.array([cv2.resize(Fd, tuple(size), \
+                            interpolation = cv2.INTER_CUBIC) \
+                            for Fd in Bmask])
         return_arguments.append(Bmask[...,None])
+        argument_idx.append(batch_arg)
 
     return_arguments = np.array(return_arguments)
-    return np.swapaxes(return_arguments, 0, 1) # bs x nargs
+    return np.swapaxes(return_arguments, 0, 1), np.swapaxes(np.array(argument_idx), 0, 1) # bs x nargs
 
 
 def main_image(args, epoch, plot=False):
@@ -121,7 +139,9 @@ def main_image(args, epoch, plot=False):
                 'arguments': {},
                 'arg_dist': {},
                 'visual_arguments': {},
+                'arguments_idx': {},
                 'predictions':{},
+                'loss':{}
             }
 
     for ai in range(args.nagents):
@@ -136,18 +156,20 @@ def main_image(args, epoch, plot=False):
             logs_data['outcome'] = data['dpreds']
             logs_data['labels'] = data['Ys']
             logs_data['arguments'][ai] = data['arguments']
-            # print("8888888888888888888888888888888888888888888888", logs_data['arguments'][ai].shape)
-            # print (ai, (np.argmax(logs_data['arguments'][ai], -1)))
             logs_data['arg_dist'][ai] = data['arguments_dist']
             logs_data['predictions'][ai] = data['preds']
+            logs_data['loss'][ai] = data['loss']
 
         # import pdb; pdb.set_trace()
         if plot:
-            logs_data['visual_arguments'][ai] = get_arguments(logs_data['images'], 
+            visual_arguments, argument_idx = get_arguments(logs_data['images'], 
                                                             data['zs'],
                                                             data['zs_idx'],
                                                             data['arguments_dist'],
                                                             args.threshold)
+            logs_data['visual_arguments'][ai] = visual_arguments
+            logs_data['arguments_idx'][ai] = argument_idx
+
 
     if plot:
         narguments = len(logs_data['arguments'][0][0])
@@ -169,8 +191,8 @@ def main_image(args, epoch, plot=False):
             title = '$Y={}$, $\mathcal{{J}}(x)={}$, $Debate(x)={}$, '.format(logs_data['labels'][imgidx//2],
                                                                         logs_data['jpred'][imgidx//2],
                                                                         logs_data['outcome'][imgidx//2])
-            if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
-            if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
+            # if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
+            # if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
             # if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
             # if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
 
@@ -202,7 +224,9 @@ def main_image(args, epoch, plot=False):
                         ax.imshow(logs_data['visual_arguments'][aidx][imgidx//2, argidx - args.nagents], cmap='coolwarm', alpha=0.5)
                         ax.get_xaxis().set_visible(False)
                         ax.get_yaxis().set_visible(False)
-                        ax.set_title('$\mathcal{{A}}^{}_{}$'.format(aidx +1, argidx - args.nagents + 1))
+                        ax.set_title('$\mathcal{{A}}^{}_{} = {}$'.format(aidx +1, 
+                                                                argidx - args.nagents + 1,
+                                                                logs_data['arguments_idx'][aidx][imgidx//2, argidx - args.nagents]))
 
         # save as png
         path = os.path.join(os.path.dirname(args.plot_dir), 'pngs/')
@@ -218,12 +242,12 @@ if __name__ == "__main__":
     args = parse_arguments()
     name = args.name
     os.makedirs(os.path.join(args.plot_dir, 'pngs'), exist_ok=True)
-    max_epoch = 39 #TODO: update...
+    max_epoch = args.stop_epoch #TODO: update...
 
     ZR = []; AH = []; AD = []; epochs = []; accs = []; P1L = []; P2L = []
     for epoch_ in range(args.start_epoch, max_epoch):
         # try:
-        data = main_image(args, epoch_, plot=True)
+        data = main_image(args, epoch_, plot=False)
         # except:
             # exit()
         print ("epoch: ================", epoch_)
@@ -231,12 +255,15 @@ if __name__ == "__main__":
         ZR.append(zr_)
         AH.append(ah_)
         AD.append(ad_)
-        # P1L.append(data[0]['loss'])
-        # P2L.append(data[1]['loss'])
+        P1L.append(np.mean(data['loss'][0]))
+        P2L.append(np.mean(data['loss'][1]))
         accs.append(dacc_)
         epochs.append(epoch_)
 
     normalize_plot = lambda x: (x - np.min(x))/(np.max(x) - np.min(x))
+    # max_loss = np.max((np.max(np.abs(P1L)), np.max(np.abs(P2L))))
+    # P1L = P1L/max_loss
+    # P2L = P2L/max_loss
 
     def ma(a, n=4) :
         ret = np.cumsum(a, dtype=float)
@@ -250,22 +277,24 @@ if __name__ == "__main__":
     ad_cubic = interp1d(epochs[:-3], ma(AD), kind='cubic', fill_value="extrapolate")
     ah_cubic = interp1d(epochs[:-3], ma(AH), kind='cubic', fill_value="extrapolate")
     acc_cubic = interp1d(epochs[:-3], ma(accs), kind='cubic', fill_value="extrapolate")
+    p1l_cubic = interp1d(epochs[:-3], ma(P1L), kind='cubic', fill_value="extrapolate")
+    p2l_cubic = interp1d(epochs[:-3], ma(P2L), kind='cubic', fill_value="extrapolate")
 
 
+    
     n = 10
     plt.clf()
     plt.figure(figsize=(6,6))
-    plt.plot(xnew[:-n], normalize_plot(zr_cubic(xnew))[:-n], c='b', label='$Z_R$')
-    plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='r', label ='$\mathcal{{AH}}$' )
+    plt.plot(xnew[:-n], zr_cubic(xnew)[:-n], c='b', label='$Z_R$')
+    plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='m', label ='$\mathcal{{AH}}$' )
     plt.plot(xnew[:-n], normalize_plot(ad_cubic(xnew))[:-n], c='k', label = '$\mathcal{{AD}}$')
     plt.plot(xnew[:-n], normalize_plot(acc_cubic(xnew))[:-n], c='g', label='Debate accuracy')
-    plt.axvline(x=25, color='orange', ls='--', label='Training mode')
+    # plt.plot(xnew[:-n], (p1l_cubic(xnew))[:-n], c='c', label='$\mathcal{{P}}^1$ Loss Profile')
+    # plt.plot(xnew[:-n], (p2l_cubic(xnew))[:-n], c='r', label='$\mathcal{{P}}^2$ Loss Profile')
+    plt.axvline(x=args.split_epoch, color='orange', ls='--', label='Training mode')
     plt.legend()
-    plt.xlabel('Training epochs')
-    plt.ylabel('Properties')
-
-    # plt.plot(epochs, P1L, c='b-')
-    # plt.plot(epochs, P2L, c='r-')
+    plt.xlabel('Epochs')
+    plt.ylabel('Normalized Properties')
 
 
     path = os.path.join(os.path.dirname(args.plot_dir), 'logs.png')

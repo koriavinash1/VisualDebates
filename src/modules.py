@@ -12,6 +12,7 @@ from geomstats.geometry.hypersphere import Hypersphere
 from geomstats.geometry.hypersphere import HypersphereMetric
 from einops import rearrange
 
+from src.hpenalty import hessian_penalty
 from torch.distributions import Categorical
 
 
@@ -144,7 +145,7 @@ class VectorQuantizer(nn.Module):
         self.legacy = args.legacy
         self.nfeatures = args.nfeatures
         self.modulated_channels = args.modulated_channels
-
+        self.temperature = args.temperature
 
         self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
                                        self.modulated_channels,
@@ -173,7 +174,7 @@ class VectorQuantizer(nn.Module):
         # self.embedding.weight.data.copy_(points_in_manifold).requires_grad=True
         # self.hsreg = lambda x: torch.cat([ torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
         # self.r = torch.nn.Parameter(torch.ones(self.n_e)).to(self.embedding.weight.device)
-        # self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
+        self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
         
 
 
@@ -201,12 +202,12 @@ class VectorQuantizer(nn.Module):
         b = -1.0 * b.sum(dim = 1)
         return torch.mean(b)
 
-    def forward(self, z,
+    def forward(self, z_,
                     temp=None, 
                     rescale_logits=False, 
                     return_logits=False):
         
-        z = self.dis_modulator(z)
+        z = self.dis_modulator(z_)
         # z = self.norm(z)
 
 
@@ -217,12 +218,17 @@ class VectorQuantizer(nn.Module):
 
 
         # intra distance (gdes-distance) between codebook vector 
-        # d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
-        # ed1 = torch.tensor(self.ed(self.embedding.weight))
-        # ed1 = ed1.repeat(self.n_e, 1)
-        # ed2 = ed1.transpose(0,1)
-        # ed3 = ed1 * ed2
-        # edx = d1/ed3
+        d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
+        ed1 = torch.tensor(self.ed(self.embedding.weight))
+        ed1 = ed1.repeat(self.n_e, 1)
+        ed2 = ed1.transpose(0,1)
+        ed3 = ed1 * ed2
+        cosine_distance = d1/ed3
+
+        # numerator = torch.exp(cosine_distance / self.temperature)        
+        # denominator = torch.mean(torch.exp(cosine_distance/ self.temperature))    
+            
+        contrastive_loss = torch.mean(cosine_distance)
         # if self.use_gpu: edx = edx.cuda()
         # edx = torch.clamp(edx, min=-0.99999, max=0.99999)
         # d1 = torch.acos(edx)
@@ -253,6 +259,9 @@ class VectorQuantizer(nn.Module):
             loss = torch.mean((z_q.detach() - z) ** 2)  
             loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
 
+
+        loss += contrastive_loss
+        loss += hessian_penalty(self.dis_modulator, z=z_, G_z = z)
 
 
         # contrastive_sum = 0
@@ -450,7 +459,7 @@ class PlayerClassifier(nn.Module):
         z = z * arg
 
         #==================
-        h_t = F.tanh(self.fc(h_t))
+        h_t = F.relu(self.fc(h_t))
         zd = F.relu(self.fc1(z))
 
         f = F.relu(self.fc2(h_t + zd))
@@ -460,7 +469,13 @@ class PlayerClassifier(nn.Module):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, concept_size, input_size, output_size, hidden_size, nclasses, use_gpu):
+    def __init__(self, concept_size, 
+                        input_size, 
+                        output_size, 
+                        hidden_size, 
+                        nclasses, 
+                        use_gpu,
+                        temperature=3):
         """
         @param input_size: total number of sampled symbols from a codebook.
         @param concept_size: dimension of an individual sampled symbol.
@@ -476,6 +491,7 @@ class PolicyNet(nn.Module):
 
         self.combine = nn.Linear(2*output_size, output_size)
 
+        self.temperature = temperature
         if use_gpu:
             self.cuda()
 
@@ -487,14 +503,14 @@ class PolicyNet(nn.Module):
         arg1_info = F.relu(self.fc1(arg1))
         arg2_info = F.relu(self.fc2(arg2))
         decision_info = F.relu(self.fc4(y))
-        history = F.tanh(self.fc3(h))
+        history = F.relu(self.fc3(h))
 
         logits = self.combine(torch.cat((arg1_info, 
                                             arg2_info,
                                             decision_info, 
                                             history), dim=1))
 
-        return F.softmax(logits, -1)
+        return F.softmax(logits/self.temperature, -1)
 
 
 
@@ -542,7 +558,7 @@ class BaselineNet(nn.Module):
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, h_t):
-        b_t = self.fc(F.tanh(h_t))
+        b_t = self.fc(F.relu(h_t))
         return b_t
 
 
@@ -561,7 +577,7 @@ class QClassifier(nn.Module):
         @param h_t: (batch, rnn_hidden)
         @return a_t: (batch, output_size)
         """
-        h_t = F.tanh(h_t)
+        h_t = F.relu(h_t)
         a_t = F.log_softmax(self.fc(h_t), dim=1)
         return a_t
 
@@ -587,7 +603,8 @@ class PlayerNet(nn.Module):
                                     output_size = args.modulated_channels, 
                                     hidden_size = args.rnn_hidden,
                                     nclasses = args.n_class,
-                                    use_gpu = args.use_gpu)
+                                    use_gpu = args.use_gpu,
+                                    temperature=args.softmax_temperature)
 
 
         self.classifier = PlayerClassifier(args.modulated_channels, args.rnn_hidden, args.num_class)
@@ -607,6 +624,26 @@ class PlayerNet(nn.Module):
         """
 
         argument_prob = self.policy_net(z, y, arg1_t, arg2_t, h_t[0])
+
+
+        # poisioning
+        # argument_prob_copy = argument_prob.clone().detach().cpu().numpy()
+        # scale = 1 - torch.min(torch.min(argument_prob_copy - arg1_t),
+        #                         torch.min(argument_prob_copy - arg2_t))
+        # scale =  scale.detach().cpu().numpy()
+        # scale = 0.1
+        # noise = torch.from_numpy(np.random.normal(
+        #                     scale=scale, 
+        #                     size=argument_prob.shape))
+        # noise = Variable(noise.float()).type_as(argument_prob).to(argument_prob.device)
+
+
+        # update logits with noise vectors
+        # for encouraging exploration
+        # argument_prob += noise 
+        # argument_prob = torch.clip(argument_prob, 0.0, 1.0)
+
+
         argument_dist = Categorical(argument_prob)
         arg_current = argument_dist.sample()
 

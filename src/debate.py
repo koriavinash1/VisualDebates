@@ -168,9 +168,10 @@ class Debate(nn.Module):
         """
         @param x: probability vector (probabilities of categorical disributions)
         """
-        # b = -1*F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
-        b = torch.max(F.softmax(x, dim=1), dim=1)[0] # * F.log_softmax(x, dim=1)
-        return 1 - torch.mean(b)
+        b = -1*(F.softmax(x, dim=-1) * F.log_softmax(x, dim=-1)).sum(-1)
+        b = -1*(F.softmax(b, dim=-1) * F.log_softmax(b, dim=-1)).sum(-1)
+        # b = torch.max(F.softmax(x, dim=1), dim=1)[0] 
+        return torch.mean(b)
 
 
     def DDistance(self, dists, arguments, ai):
@@ -184,20 +185,25 @@ class Debate(nn.Module):
         dist1tilde = torch.mean(dist1, 0)
 
         if ai == 0: 
-            dist_ = torch.norm(dist0tilde - dist1tilde.detach(), 1)
-            # inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0),
-            #                                         arguments[1].unsqueeze(0).detach()], 0), 0))
-            intra_variance = torch.mean(torch.var(dist0, 0))
+            euclidian_distance = torch.norm(dist0tilde - dist1tilde.clone().detach(), 1)
+            cosine_distance = self.contrastive_loss(dist0tilde, dist1tilde.clone().detach())
         else:
-            dist_ = torch.norm(dist0tilde.detach() - dist1tilde, 1)
-            # inter_variance = torch.mean(torch.var(torch.cat([arguments[0].unsqueeze(0).detach(),
-            #                                         arguments[1].unsqueeze(0)], 0), 0))
-            intra_variance = torch.mean(torch.var(dist1, 1))
-
-        distance = 0.1*torch.mean(dist_)
+            euclidian_distance = torch.norm(dist0tilde.clone().detach() - dist1tilde, 1)
+            cosine_distance = self.contrastive_loss(dist0tilde.clone().detach(), dist1tilde)
 
 
-        return distance, (0, intra_variance)
+        cosine_distance_intra = 0
+        for ii in range(1, dist0.shape[0]):
+            if ai == 0:
+                cosine_distance_intra += torch.mean(F.cosine_similarity(dist0[ii-1], dist0[ii]))
+            else:
+                cosine_distance_intra += torch.mean(F.cosine_similarity(dist1[ii-1], dist1[ii]))
+
+
+        intra_argument_distance = (1.0/dist0.shape[0]) * cosine_distance_intra
+        inter_argument_distance = euclidian_distance  - cosine_distance
+
+        return inter_argument_distance, intra_argument_distance
 
 
     def forward(self, x, y, lts, is_training=False, epoch=1):
@@ -219,6 +225,7 @@ class Debate(nn.Module):
         with torch.no_grad():
             jpred_probs = self.judge(x).detach()
             jpred = torch.argmax(jpred_probs, 1)
+            # jpred = y
 
 
         # quantized distillation
@@ -277,10 +284,11 @@ class Debate(nn.Module):
 
             # Classifier Loss ---> distillation loss
             if self.contrastive:
-                loss_classifier = self.contrastive_loss(h_t[ai][0], 
-                                        h_t[1-ai][0].clone().detach())
+                loss_classifier = torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                        h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = 10 * F.nll_loss(log_prob_agents[ai], jpred)
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
+
 
 
             # Baseline Loss
@@ -294,23 +302,26 @@ class Debate(nn.Module):
             # Reinforce Loss
             # TODO: thought https://github.com/kevinzakka/recurrent-visual-attention/issues/10#issuecomment-378692338
             # loss_reinforce = torch.mean(-log_pi*adjusted_reward)
-            adjusted_reward = reward #- baselines.detach()
+            adjusted_reward = reward - baselines.detach()
             loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
             loss_reinforce = torch.mean(loss_reinforce)
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(args_dist)
-            inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
+            intra_argument_entropy = self.HLoss(args_dist)
+            inter_argument_distance, intra_argument_distance = self.DDistance(arg_dists_t, arguments, ai)
             
+            # maximize intra argument cosine distance and entropy
+            regularization_loss = -intra_argument_entropy + intra_argument_distance
+
             if self.contrastive:
-                regularization_loss = intra_loss - inter_dis - divergance[0] - divergance[1]
+                regularization_loss -= inter_argument_distance
             else:
-                regularization_loss = intra_loss - divergance[1] + inter_dis + divergance[0] 
+                regularization_loss += inter_argument_distance 
             
 
             loss = (loss_reinforce + loss_baseline) +\
-                                loss_classifier + 1*regularization_loss
+                            loss_classifier + 0.25*regularization_loss
 
 
 
@@ -365,15 +376,14 @@ class Debate(nn.Module):
         jpred_probs = torch.mean(jpred_probs, 0)
         jpred = torch.argmax(jpred_probs, 1)
 
-
         z_orig, symbol_idxs_, qloss = self.fext(x)
 
         z_ = F.adaptive_avg_pool2d(z_orig, (1,1)).squeeze()
         
         cqlog_probs = self.quantized_classifier(z_)
-        cq_loss = F.nll_loss(cqlog_probs, torch.argmax(jpred_probs_, 1))
+        cq_loss = F.nll_loss(cqlog_probs, torch.argmax(cqlog_probs, 1))
         cq_preds = torch.argmax(cqlog_probs, 1)
-        cq_correct = (cq_preds == torch.argmax(jpred_probs_, 1)).float()
+        cq_correct = (cq_preds == torch.argmax(cqlog_probs, 1)).float()
         cq_acc = 100 * (cq_correct.sum() / len(cq_preds))
 
 
@@ -430,12 +440,12 @@ class Debate(nn.Module):
 
             # classifier loss -> distillation
             if self.contrastive:
-                loss_classifier = self.contrastive_loss(h_t[ai][0], 
-                                        h_t[1-ai][0].clone().detach())
+                loss_classifier = -torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                        h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = 10.0 * F.nll_loss(log_prob_agents[ai], jpred)
-            
-            
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
+
+
             # Prediction Loss & Reward
             # preds:    (batch)
             # reward:   (batch)
@@ -449,22 +459,26 @@ class Debate(nn.Module):
             # Reinforce Loss
             # TODO: thought https://github.com/kevinzakka/recurrent-visual-attention/issues/10#issuecomment-378692338
             # loss_reinforce = torch.mean(-log_pi*adjusted_reward)
-            adjusted_reward = reward #- baselines.detach()
+            adjusted_reward = reward - baselines.detach()
             loss_reinforce = torch.sum(-log_pi*adjusted_reward, dim=1)
             loss_reinforce = torch.mean(loss_reinforce)
 
 
             # sum up into a hybrid loss
-            intra_loss = self.HLoss(args_dist)
-            inter_dis, divergance = self.DDistance(arg_dists_t, arguments, ai)
+            intra_argument_entropy = self.HLoss(args_dist)
+            inter_argument_distance, intra_argument_distance = self.DDistance(arg_dists_t, arguments, ai)
+            
+            # maximize intra argument entropy and minimizing cosine distance
+            regularization_loss = -intra_argument_entropy + intra_argument_distance
 
             if self.contrastive:
-                regularization_loss = intra_loss - inter_dis - divergance[0] - divergance[1]
+                regularization_loss -= inter_argument_distance
             else:
-                regularization_loss = intra_loss - divergance[1] + inter_dis + divergance[0] 
-
+                regularization_loss += inter_argument_distance 
+            
             loss = (loss_reinforce + loss_baseline) +\
-                     loss_classifier + 1.0*regularization_loss
+                            loss_classifier + 0.25*regularization_loss
+
 
 
              # calculate accuracy

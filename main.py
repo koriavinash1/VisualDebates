@@ -22,7 +22,7 @@ def parse_args():
     import sys
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--name', type=str, default='test', help='Name of an exp')
-    parser.add_argument('--M', type=float, default=10, help='Monte Carlo sampling for valid and test sets')
+    parser.add_argument('--M', type=float, default=1, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
@@ -61,6 +61,7 @@ def parse_args():
     data_arg.add_argument('--random_split', type=str2bool, default=True, help='Whether to randomly split the train and valid indices')
     data_arg.add_argument('--include_classes', type=str, default='all', help='include subset of classes for debate')
    
+
     # training params
     train_arg = parser.add_argument_group('Training Params')
     train_arg.add_argument('--is_train', type=str2bool, default=True, help='Whether to train or test the model')
@@ -68,9 +69,11 @@ def parse_args():
     train_arg.add_argument('--epochs', type=int, default=25, help='# of epochs to train for')
     train_arg.add_argument('--patience', type=int, default=5, help='Max # of epochs to wait for no validation improv')
     train_arg.add_argument('--momentum', type=float, default=0.5, help='Nesterov momentum value')
-    train_arg.add_argument('--init_lr', type=float, default=0.001, help='Initial learning rate value')
+    train_arg.add_argument('--init_lr', type=float, default=0.005, help='Initial learning rate value')
     train_arg.add_argument('--min_lr', type=float, default=0.000001, help='Min learning rate value')
     train_arg.add_argument('--saturate_epoch', type=int, default=150, help='Epoch at which decayed lr will reach min_lr')
+    train_arg.add_argument('--softmax_temperature', type=float, default=3.0, help='Temperature for softmax distribution for sampling arguments')
+
 
     #Plotting
     plot_args = parser.add_argument_group('Plotting parameters')
@@ -154,9 +157,11 @@ if __name__ == '__main__':
     if args.is_train:        
         train_dataset = DataGenerator(os.path.join(args.data_dir,'training'), 
                                                     traintransformSequence,
+                                                    nclasses = args.n_class,
                                                     include_classes=args.include_classes)
         val_dataset = DataGenerator(os.path.join(args.data_dir,'testing'), 
                                                     traintransformSequence,
+                                                    nclasses = args.n_class,
                                                     include_classes=args.include_classes)
         train_loader, val_loader = get_train_val_loader(
             train_dataset, val_dataset,
@@ -233,20 +238,22 @@ if __name__ == '__main__':
         # compute debate reward:===================
         rand_prob = np.random.uniform(0,1)
 
-        if args.contrastive:
+        # masking z based on arguments..........
+        z_pertub = z.clone()
 
-            # masking z based on arguments..........
-            z_pertub = z.clone()
-
-            arguments_ = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
-            debate_information = z_pertub*arguments_ 
+        arguments_ = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
+        debate_information = z_pertub*arguments_ 
 
 
-            with torch.no_grad():
-                pred = model.quantized_classifier(debate_information)
-                pred = torch.argmax(pred, dim=1)
-        else:
+        with torch.no_grad():
+            dpred = model.quantized_classifier(debate_information)
+            dpred = torch.argmax(dpred, dim=1)
+        
+
+        if not args.contrastive:
             pred = y
+        else:
+            pred = dpred
 
 
         eq_idx = (claims[0] == claims[1]).float()
@@ -295,7 +302,13 @@ if __name__ == '__main__':
             reward -= rcount
    
 
-        return reward, pred
+        # binarize reward for easier training
+        reward[reward >= 0.5*(args.narguments + 1)] = +1
+        reward[reward < 0.5*(args.narguments + 1)]  = -1
+
+        # or normalize rewards
+        # reward = (reward - torch.min(reward))/(1e-3 + torch.max(reward) - torch.min(reward))
+        return reward, dpred
 
         
     # reward_fns = [lambda z, sidx, args, p, y:  (1.0*(p[0] == y), y), #get_rewardZEROSUM(z, sidx, args, p, y, False),
