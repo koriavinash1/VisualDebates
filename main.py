@@ -40,6 +40,7 @@ def parse_args():
     vq_network_arg.add_argument('--legacy', type=bool, default=True, help='use previously predicted info')
     vq_network_arg.add_argument('--gumbel', type=bool, default=False, help='use gumbel sampler')
     vq_network_arg.add_argument('--sigma', type=float, default=0.1, help='default sd for kl divergance')
+    vq_network_arg.add_argument('--quantize', type=str, default='channel', help='quantize spatially or channel wise options: [spatial, channel]')
     vq_network_arg.add_argument('--temperature', type=float, default=1.0, help='default temperature for gumbel softmax sampler')
     vq_network_arg.add_argument('--modulated_channels', type=int, default=64, help='adjust total number of features before quantization')
 
@@ -303,8 +304,8 @@ if __name__ == '__main__':
    
 
         # binarize reward for easier training
-        reward[reward >= 0.5*(args.narguments + 1)] = +1
-        reward[reward < 0.5*(args.narguments + 1)]  = -1
+        # reward[reward >= 0.5*(args.narguments + 1)] = +1
+        # reward[reward < 0.5*(args.narguments + 1)]  = -1
 
         # or normalize rewards
         # reward = (reward - torch.min(reward))/(1e-3 + torch.max(reward) - torch.min(reward))

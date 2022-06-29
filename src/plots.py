@@ -24,6 +24,8 @@ def parse_arguments():
                      help="epoch of desired plot")
     arg.add_argument("--nagents", type=int, default=2,
                      help="Total number of agents in a debate")
+    arg.add_argument("--quantize", type=str, default='channel',
+                     help="Different quantization approaches: spatial or channel")
     arg.add_argument("--name", type=str, default='', 
                     help='Name of the plots')
     arg.add_argument("--properties", type=bool, default=False, 
@@ -81,7 +83,12 @@ def get_properties(pred, y, arguments):
 
 
 
-def get_arguments(x, z, sampled_idx, arguments, threshold=0.85):
+def get_arguments(x, z, 
+                    sampled_idx, 
+                    arguments, 
+                    arg_idx = [],
+                    quantize = 'channel', 
+                    threshold=0.85):
     size = np.asarray(x.shape[1:-1])
     return_arguments = [] #nargs x bs
     argument_idx = []
@@ -92,17 +99,25 @@ def get_arguments(x, z, sampled_idx, arguments, threshold=0.85):
         z_pertub = [];batch_arg = []
         for i in range(z.shape[0]):
             # sampling with poisioning
-            probabilities = arguments[i, ai,:]
-            noise = np.random.uniform(0, 0.25, probabilities.shape)
-            probabilities += noise
-            probabilities /= np.sum(probabilities)
-            idx = np.random.choice(arguments.shape[-1], 1, p = probabilities)
+            if not len(arg_idx):
+                probabilities = arguments[i, ai,:]
+                noise = np.random.uniform(0, 0.25, probabilities.shape)
+                probabilities += noise
+                probabilities /= np.sum(probabilities)
+                idx = np.random.choice(arguments.shape[-1], 1, p = probabilities)
+            else:
+                idx = np.argmax(arg_idx[i, ai])
 
             print (i, ai, idx)
             z_ = copy.deepcopy(z[i])
-            z_[sampled_idx[i] == sampled_idx[i][idx]] = 0 
+            if quantize == 'channel':
+                z_[sampled_idx[i] == sampled_idx[i][idx]] = 0 
+                batch_arg.append(sampled_idx[i][idx])
+            else:
+                z_[idx] = 0
+                batch_arg.append(idx)
+
             z_pertub.append(z_)
-            batch_arg.append(sampled_idx[i][idx])
 
         z_pertub = np.array(z_pertub)
 
@@ -166,7 +181,9 @@ def main_image(args, epoch, plot=False):
                                                             data['zs'],
                                                             data['zs_idx'],
                                                             data['arguments_dist'],
-                                                            args.threshold)
+                                                            arg_idx = data['arguments'],
+                                                            quantize=args.quantize,
+                                                            threshold = args.threshold)
             logs_data['visual_arguments'][ai] = visual_arguments
             logs_data['arguments_idx'][ai] = argument_idx
 
@@ -191,9 +208,9 @@ def main_image(args, epoch, plot=False):
             title = '$Y={}$, $\mathcal{{J}}(x)={}$, $Debate(x)={}$, '.format(logs_data['labels'][imgidx//2],
                                                                         logs_data['jpred'][imgidx//2],
                                                                         logs_data['outcome'][imgidx//2])
-            # if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
-            # if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
-            # if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
+            if logs_data['labels'][imgidx//2] != logs_data['jpred'][imgidx//2]: continue
+            if logs_data['outcome'][imgidx//2] != logs_data['labels'][imgidx//2]: continue
+            if logs_data['predictions'][0][imgidx//2] == logs_data['predictions'][1][imgidx//2]: continue
             # if logs_data['predictions'][0][imgidx//2] != logs_data['outcome'][imgidx//2]: continue
 
             for aidx in range(args.nagents):
@@ -251,7 +268,7 @@ if __name__ == "__main__":
         # except:
             # exit()
         print ("epoch: ================", epoch_)
-        zr_, ah_, ad_, dacc_ = get_properties(data['jpred'], data['labels'], data['arg_dist'])
+        zr_, ah_, ad_, dacc_ = get_properties(data['outcome'], data['jpred'], data['arg_dist'])
         ZR.append(zr_)
         AH.append(ah_)
         AD.append(ad_)
@@ -271,24 +288,28 @@ if __name__ == "__main__":
         return (ret[n - 1:] / n)
 
     ## compute ema and plotting 
-    xnew = np.linspace(0, max_epoch, num=100)
-    print (max(xnew))
-    zr_cubic = interp1d(epochs[:-3], ma(ZR), kind='cubic', fill_value="extrapolate")
-    ad_cubic = interp1d(epochs[:-3], ma(AD), kind='cubic', fill_value="extrapolate")
-    ah_cubic = interp1d(epochs[:-3], ma(AH), kind='cubic', fill_value="extrapolate")
-    acc_cubic = interp1d(epochs[:-3], ma(accs), kind='cubic', fill_value="extrapolate")
-    p1l_cubic = interp1d(epochs[:-3], ma(P1L), kind='cubic', fill_value="extrapolate")
-    p2l_cubic = interp1d(epochs[:-3], ma(P2L), kind='cubic', fill_value="extrapolate")
+    xnew = np.linspace(0, max_epoch, num=25)
+    print (max(xnew), accs)
+    zr_cubic = interp1d(epochs[:-3], ma(ZR), kind='slinear', fill_value="extrapolate")
+    ad_cubic = interp1d(epochs[:-3], ma(AD), kind='slinear', fill_value="extrapolate")
+    ah_cubic = interp1d(epochs[:-3], ma(AH), kind='slinear', fill_value="extrapolate")
+    acc_cubic = interp1d(epochs[:-3], ma(accs), kind='slinear', fill_value="extrapolate")
+    p1l_cubic = interp1d(epochs[:-3], ma(P1L), kind='slinear', fill_value="extrapolate")
+    p2l_cubic = interp1d(epochs[:-3], ma(P2L), kind='slinear', fill_value="extrapolate")
 
 
     
-    n = 10
+    n = 3
     plt.clf()
     plt.figure(figsize=(6,6))
+    # plt.plot(epochs[:-n], ma(ZR), c='b', label='$Z_R$')
+    # plt.plot(epochs[:-n], normalize_plot(ma(AH)), c='m', label ='$\mathcal{{AH}}$' )
+    # plt.plot(epochs[:-n], normalize_plot(ma(AD)), c='k', label = '$\mathcal{{AD}}$')
+    # plt.plot(epochs[:-n], ma(accs), c='g', label='Debate accuracy')
     plt.plot(xnew[:-n], zr_cubic(xnew)[:-n], c='b', label='$Z_R$')
     plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='m', label ='$\mathcal{{AH}}$' )
     plt.plot(xnew[:-n], normalize_plot(ad_cubic(xnew))[:-n], c='k', label = '$\mathcal{{AD}}$')
-    plt.plot(xnew[:-n], normalize_plot(acc_cubic(xnew))[:-n], c='g', label='Debate accuracy')
+    plt.plot(xnew[:-n], acc_cubic(xnew)[:-n], c='g', label='Debate accuracy')
     # plt.plot(xnew[:-n], (p1l_cubic(xnew))[:-n], c='c', label='$\mathcal{{P}}^1$ Loss Profile')
     # plt.plot(xnew[:-n], (p2l_cubic(xnew))[:-n], c='r', label='$\mathcal{{P}}^2$ Loss Profile')
     plt.axvline(x=args.split_epoch, color='orange', ls='--', label='Training mode')

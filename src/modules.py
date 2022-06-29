@@ -138,8 +138,17 @@ class VectorQuantizer(nn.Module):
 
         # remap = args.remap
         # unknown_index = args.unknown_index
-        self.n_e = args.nconcepts
-        self.e_dim = args.cdim
+
+        # quantize can be spatial or channels
+        self.quantize = args.quantize
+
+        if not self.quantize == 'spatial':
+            self.n_e = args.nconcepts
+            self.e_dim = args.cdim
+        else:
+            self.n_e = args.cdim
+            self.e_dim = args.nconcepts
+
         self.beta = args.beta
         self.use_gpu = args.use_gpu
         self.legacy = args.legacy
@@ -155,6 +164,7 @@ class VectorQuantizer(nn.Module):
         self.norm = nn.BatchNorm2d(self.modulated_channels, affine=True)
 
         print ("USING CB MODULATOR..............")
+        print ("QUANTIZING WRT:......{}".format(self.quantize))
 
         # self.epsilon = 1e-4
         # self.eps = {torch.float32: 4e-3, torch.float64: 1e-5}
@@ -210,6 +220,14 @@ class VectorQuantizer(nn.Module):
         z = self.dis_modulator(z_)
         # z = self.norm(z)
 
+        # feature disentanglement loss
+        hp = hessian_penalty(self.dis_modulator, z=z_, G_z = z)
+
+        if self.quantize == 'spatial':
+           # reshape z  and flatten
+            z = rearrange(z, 'b c h w -> b h w c').contiguous()
+           
+
 
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
@@ -261,7 +279,7 @@ class VectorQuantizer(nn.Module):
 
 
         loss += contrastive_loss
-        loss += hessian_penalty(self.dis_modulator, z=z_, G_z = z)
+        loss += hp
 
 
         # contrastive_sum = 0
@@ -281,6 +299,8 @@ class VectorQuantizer(nn.Module):
         # preserve gradients
         z_q = z + (z_q - z).detach()
 
+        if self.quantize == 'spatial':
+            z_q = rearrange(z_q, 'b h w c -> b c h w').contiguous()
 
         sampled_idx = torch.zeros(z.shape[0]*self.n_e).to(z.device)
         sampled_idx[min_encoding_indices] = 1
@@ -592,6 +612,7 @@ class PlayerNet(nn.Module):
         super(PlayerNet, self).__init__()
         self.narguments = args.narguments
 
+        self.quantize = args.quantize
         self.rnn = core_network(args.rnn_input_size, 
                                     args.rnn_hidden, 
                                     args.use_gpu)
@@ -626,7 +647,13 @@ class PlayerNet(nn.Module):
         argument_prob = self.policy_net(z, y, arg1_t, arg2_t, h_t[0])
 
 
-        # poisioning
+        # distribution conditioning
+        arg1_idx = torch.argmax(arg1_t, 1); arg2_idx = torch.argmax(arg2_t, 1)
+        argument_prob_ = argument_prob.clone()
+        argument_prob_[:, arg1_idx] = 0
+        argument_prob_[:, arg2_idx] = 0
+
+        # distribution poisioning
         # argument_prob_copy = argument_prob.clone().detach().cpu().numpy()
         # scale = 1 - torch.min(torch.min(argument_prob_copy - arg1_t),
         #                         torch.min(argument_prob_copy - arg2_t))
@@ -638,13 +665,14 @@ class PlayerNet(nn.Module):
         # noise = Variable(noise.float()).type_as(argument_prob).to(argument_prob.device)
 
 
-        # update logits with noise vectors
-        # for encouraging exploration
+        # # update logits with noise vectors
+        # # for encouraging exploration
         # argument_prob += noise 
         # argument_prob = torch.clip(argument_prob, 0.0, 1.0)
 
 
-        argument_dist = Categorical(argument_prob)
+        # argument_dist = Categorical(argument_prob)
+        argument_dist = Categorical(logits = argument_prob_)
         arg_current = argument_dist.sample()
 
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
@@ -657,7 +685,10 @@ class PlayerNet(nn.Module):
 
 
         for i, _ in enumerate(z.clone()):
-            arg_current_one_hot[i, z_idxs[i] == z_idxs[i][arg_current[i]]] = 1
+            if self.quantize == 'channel':
+                arg_current_one_hot[i, z_idxs[i] == z_idxs[i][arg_current[i]]] = 1
+            else:
+                arg_current_one_hot[i, arg_current[i]] = 1
 
 
         z_current = self.modulator_net(z, arg_current_one_hot)

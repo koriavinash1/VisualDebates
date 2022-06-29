@@ -1,5 +1,5 @@
-NAME='test-cosine-distance-binary-reward'
-LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/Logs/SHAPES/'$NAME
+NAME='test'
+LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsConstrastive/SHAPES/'$NAME
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --data_dir=/vol/biomedic2/agk21/PhDLogs/datasets/SHAPES/shapes \
@@ -19,7 +19,8 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
         --n_class=4 \
-       #  --include_classes 'circle, star' 
+        --quantize=spatial \
+        # --include_classes 'circle, star' 
                     
 echo Support Pre-training Completed
 
@@ -43,7 +44,8 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
         --n_class=4 \
-       #  --include_classes 'circle, star' \
+        --quantize=spatial \
+        # --include_classes 'circle, star' 
                     
 echo Debate Completed
 
@@ -53,6 +55,7 @@ echo $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/src/plots.py \
        --plot_dir $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1 \
+       --quantize=spatial \
        --start_epoch 0 \
        --stop_epoch 14 \
        --split_epoch 9

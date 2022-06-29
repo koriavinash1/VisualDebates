@@ -1,5 +1,5 @@
-NAME='test-contrastive'
-LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/Logs/MNIST/'$NAME
+NAME='test'
+LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsConstrastive/MNIST/'$NAME
 
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
@@ -19,6 +19,7 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
+        --quantize=spatial \
         # --include_classes '9, 6' \
                     
 echo Support Pre-training Completed
@@ -42,6 +43,7 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
+        --quantize=spatial \
         # --include_classes '9, 6' \
 
                     
@@ -53,6 +55,7 @@ echo $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/src/plots.py \
        --plot_dir $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1 \
+       --quantize=spatial \
        --start_epoch 0 \
        --stop_epoch 39 \
        --split_epoch 24

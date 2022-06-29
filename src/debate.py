@@ -183,6 +183,10 @@ class Debate(nn.Module):
         
         dist0tilde = torch.mean(dist0, 0)
         dist1tilde = torch.mean(dist1, 0)
+        
+        dist0tilde = dist0tilde/torch.norm(dist0tilde, 1)
+        dist1tilde = dist1tilde/torch.norm(dist1tilde, 1)
+
 
         if ai == 0: 
             euclidian_distance = torch.norm(dist0tilde - dist1tilde.clone().detach(), 1)
@@ -285,9 +289,11 @@ class Debate(nn.Module):
             # Classifier Loss ---> distillation loss
             if self.contrastive:
                 loss_classifier = torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                        h_t[1-ai][0].clone().detach()))
+                                     h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) - \
+                                    torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                            h_t[1-ai][0].clone().detach()))
 
 
 
@@ -321,7 +327,7 @@ class Debate(nn.Module):
             
 
             loss = (loss_reinforce + loss_baseline) +\
-                            loss_classifier + 0.25*regularization_loss
+                            loss_classifier + 0.1*regularization_loss
 
 
 
@@ -440,11 +446,12 @@ class Debate(nn.Module):
 
             # classifier loss -> distillation
             if self.contrastive:
-                loss_classifier = -torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                        h_t[1-ai][0].clone().detach()))
+                loss_classifier = torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                     h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred)
-
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) - \
+                                    torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                            h_t[1-ai][0].clone().detach()))
 
             # Prediction Loss & Reward
             # preds:    (batch)
@@ -477,7 +484,7 @@ class Debate(nn.Module):
                 regularization_loss += inter_argument_distance 
             
             loss = (loss_reinforce + loss_baseline) +\
-                            loss_classifier + 0.25*regularization_loss
+                            loss_classifier + 0.1*regularization_loss
 
 
 

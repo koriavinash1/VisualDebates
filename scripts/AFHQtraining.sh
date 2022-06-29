@@ -1,5 +1,5 @@
-NAME='test2'
-LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsTest2/AFHQ/'$NAME
+NAME='test'
+LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsContrastive/AFHQ/'$NAME
 
 
 
@@ -21,7 +21,9 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --narguments=$1 \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
-        --nconcepts=$4
+        --nconcepts=$4\
+        --quantize=spatial \
+
 
 echo Debate Completed
 
@@ -46,7 +48,8 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --narguments=$1 \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
-        --nconcepts=$4
+        --nconcepts=$4 \
+        --quantize=spatial \
 
 echo Debate Completed
 
@@ -56,6 +59,7 @@ echo $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/src/plots.py \
        --plot_dir $LOGSDIR/plots/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1/Exp-$NAME-Debate:GRU_$1_$4_$2_$3_1 \
+       --quantize=spatial \
        --start_epoch 0 \
        --stop_epoch 39 \
        --split_epoch 29
