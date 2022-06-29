@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch
 import torch.nn as nn
 from src.modules import PlayerNet
+
 torch.autograd.set_detect_anomaly(True)
 
 class RecurrentAttentionAgent(nn.Module):
@@ -13,7 +14,7 @@ class RecurrentAttentionAgent(nn.Module):
         """
         super(RecurrentAttentionAgent, self).__init__()
         self.use_gpu = args.use_gpu
-        self.nfeatures = args.nfeatures
+        self.nfeatures = args.modulated_channels
         self.M = args.M
 
         self.ram_net = PlayerNet(args)
@@ -25,13 +26,15 @@ class RecurrentAttentionAgent(nn.Module):
                                         args.nconcepts)
 
         self.__init_optimizer(args.init_lr)
+        self.classifier = self.ram_net.classifier
 
     def init_argument(self, batch_size):
         dtype = torch.cuda.FloatTensor if self.use_gpu else torch.FloatTensor
         arg_0 = torch.Tensor(batch_size, self.nfeatures).uniform_(0, 1)
         arg_0 = Variable(arg_0).type(dtype)
-        arg_0 = F.softmax(arg_0)
-        return torch.argmax(arg_0, 1)
+        arg_0 = F.softmax(arg_0, dim=1)
+        arg_0 = 1.0*F.one_hot(torch.argmax(arg_0, 1), num_classes=arg_0.shape[-1])
+        return arg_0
     
     def init_rnn_hidden(self, batch_size):
         return self.ram_net.rnn.init_hidden(batch_size)
@@ -39,16 +42,14 @@ class RecurrentAttentionAgent(nn.Module):
     def __init_optimizer(self, lr=1e-3, weight_decay = 1e-5):
         print("LearningRate: ", lr)
         self.optimizer = torch.optim.Adam (self.parameters(), 
-                            lr=3*lr, 
+                            lr=lr, 
                             weight_decay=weight_decay)
 
-    def forwardStep(self, x, arg_agent, arg_other, h_t):
-        return self.ram_net.step(x, arg_agent, arg_other, h_t)
+    def forwardStep(self, *args):
+        return self.ram_net.step(*args)
 
     def optStep(self, loss):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-    def classifier(self, h):
-        return self.ram_net.classifier(h)

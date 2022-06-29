@@ -7,7 +7,8 @@ from src.Classifier import model
 model_urls = {
     'stl10': '/vol/biomedic2/agk21/PhDLogs/codes/pytorch-playground/stl10/log/default/best.pth',
     'mnist': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/MNIST/best.pth',
-    'afhq': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/AFHQ/best.pth'
+    'afhq': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/AFHQ/best.pth',
+    'shapes': '/vol/biomedic2/agk21/PhDLogs/codes/GLANCE-Explanations/Classifier/Logs/SHAPES/best.pth'
 }
 
 class SVHN(nn.Module):
@@ -63,6 +64,27 @@ def mnist(n_channel, pretrained=None):
         assert isinstance(state_dict, (dict, OrderedDict)), type(state_dict)
         model.load_state_dict(state_dict)
         print ("MNIST weights loaded ............")
+    return model
+
+
+def shapes(n_channel=16, pretrained=None):
+    cfg = [
+        # n_channel, 'M',
+        # 2*n_channel, 'M',
+        # 4*n_channel, 'M',
+        # 4*n_channel, 'M',
+        n_channel, 'M', 
+        n_channel, 'M', 
+        2*n_channel, 'M',
+    ]
+    layers = make_layers(cfg, batch_norm=True)
+    model = SVHN(layers, n_channel=32*n_channel, num_classes=4)
+    if pretrained is not None:
+        m = torch.load(model_urls['shapes'])
+        state_dict = m.state_dict() if isinstance(m, nn.Module) else m
+        assert isinstance(state_dict, (dict, OrderedDict)), type(state_dict)
+        model.load_state_dict(state_dict)
+        print ("SHAPE weights loaded ............")
     return model
 
 

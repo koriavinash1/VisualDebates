@@ -22,12 +22,13 @@ def parse_args():
     import sys
     parser = argparse.ArgumentParser(description='')
     parser.add_argument('--name', type=str, default='test', help='Name of an exp')
-    parser.add_argument('--M', type=float, default=10, help='Monte Carlo sampling for valid and test sets')
+    parser.add_argument('--M', type=float, default=1, help='Monte Carlo sampling for valid and test sets')
 
     # common parameters
     common_arg = parser.add_argument_group('GlimpseNet Params')
     common_arg.add_argument('--img_size', type=int, default=32, help='size of extracted patch at highest res')
     common_arg.add_argument('--narguments', type=int, default=6, help='# of glimpses, i.e. BPTT iterations')
+    common_arg.add_argument('--committed', type=bool, default=True, help='ablation for committed and non committed debates')
 
 
     # codebook params
@@ -36,10 +37,12 @@ def parse_args():
     vq_network_arg.add_argument('--nfeatures', type=int, default=64, help='total number of sampled discrete symbols for every image')
     vq_network_arg.add_argument('--cdim', type=int, default=16, help='dimension of each concept vector')
     vq_network_arg.add_argument('--beta', type=float, default=0.9, help='component of quantization loss')
-    vq_network_arg.add_argument('--disentangle', type=bool, default=True, help='enforces disentanglement with addditional regularizations')
-    vq_network_arg.add_argument('--remap', default=None, help='for remapping idx ot desired dimension')
-    vq_network_arg.add_argument('--unknown_index', type=str, default="random", help='remap parameter')
     vq_network_arg.add_argument('--legacy', type=bool, default=True, help='use previously predicted info')
+    vq_network_arg.add_argument('--gumbel', type=bool, default=False, help='use gumbel sampler')
+    vq_network_arg.add_argument('--sigma', type=float, default=0.1, help='default sd for kl divergance')
+    vq_network_arg.add_argument('--quantize', type=str, default='channel', help='quantize spatially or channel wise options: [spatial, channel]')
+    vq_network_arg.add_argument('--temperature', type=float, default=1.0, help='default temperature for gumbel softmax sampler')
+    vq_network_arg.add_argument('--modulated_channels', type=int, default=64, help='adjust total number of features before quantization')
 
 
     # core_network params
@@ -59,6 +62,7 @@ def parse_args():
     data_arg.add_argument('--random_split', type=str2bool, default=True, help='Whether to randomly split the train and valid indices')
     data_arg.add_argument('--include_classes', type=str, default='all', help='include subset of classes for debate')
    
+
     # training params
     train_arg = parser.add_argument_group('Training Params')
     train_arg.add_argument('--is_train', type=str2bool, default=True, help='Whether to train or test the model')
@@ -66,9 +70,11 @@ def parse_args():
     train_arg.add_argument('--epochs', type=int, default=25, help='# of epochs to train for')
     train_arg.add_argument('--patience', type=int, default=5, help='Max # of epochs to wait for no validation improv')
     train_arg.add_argument('--momentum', type=float, default=0.5, help='Nesterov momentum value')
-    train_arg.add_argument('--init_lr', type=float, default=0.001, help='Initial learning rate value')
+    train_arg.add_argument('--init_lr', type=float, default=0.005, help='Initial learning rate value')
     train_arg.add_argument('--min_lr', type=float, default=0.000001, help='Min learning rate value')
     train_arg.add_argument('--saturate_epoch', type=int, default=150, help='Epoch at which decayed lr will reach min_lr')
+    train_arg.add_argument('--softmax_temperature', type=float, default=3.0, help='Temperature for softmax distribution for sampling arguments')
+
 
     #Plotting
     plot_args = parser.add_argument_group('Plotting parameters')
@@ -92,7 +98,7 @@ def parse_args():
     misc_arg.add_argument('--resume', type=str2bool, default=False, help='Whether to resume training from checkpoint')
     misc_arg.add_argument('--print_freq', type=int, default=10, help='How frequently to print training details')
     misc_arg.add_argument('--plot_freq', type=int, default=1, help='How frequently to plot glimpses')
-    misc_arg.add_argument('--plot_num_imgs', type=int, default=4, help='How many imgs to plot glimpses animiation')
+    misc_arg.add_argument('--plot_num_imgs', type=int, default=-1, help='How many imgs to plot glimpses animiation')
     
 
     # debate parameters
@@ -100,7 +106,7 @@ def parse_args():
     debate_arg.add_argument('--nagents', type=int, default=2, help='# of agents in debate')
     debate_arg.add_argument('--contrastive', type=bool, default=False, help='fine tune supporter models')
     debate_arg.add_argument('--reward_weightage', type=float, default=1, help='weightage for reward')
-    debate_arg.add_argument('--rl_weightage', type=float, default=0.5, help='weightage for rl loss terms')
+    debate_arg.add_argument('--rl_weightage', type=float, default=1, help='weightage for rl loss terms')
 
 
     # LocationNet params
@@ -131,7 +137,7 @@ if __name__ == '__main__':
     traintransformList = [
                     # transforms.RandomAffine(30, translate=(0.2, 0.2), scale=(0.7, 1.0), shear=0.0),
                     transforms.Resize(transResize),
-                    transforms.RandomHorizontalFlip(),
+                    # transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                     ]
@@ -152,9 +158,11 @@ if __name__ == '__main__':
     if args.is_train:        
         train_dataset = DataGenerator(os.path.join(args.data_dir,'training'), 
                                                     traintransformSequence,
+                                                    nclasses = args.n_class,
                                                     include_classes=args.include_classes)
         val_dataset = DataGenerator(os.path.join(args.data_dir,'testing'), 
                                                     traintransformSequence,
+                                                    nclasses = args.n_class,
                                                     include_classes=args.include_classes)
         train_loader, val_loader = get_train_val_loader(
             train_dataset, val_dataset,
@@ -179,74 +187,34 @@ if __name__ == '__main__':
     model = Debate(args)
     manipulator_prob = 0.6
 
-    def get_reward(z, sampled_idx, arguments, logits, y, attacker=False):
-        EPS = 1e-3
-        pred = torch.max(logits, dim=1)[0]
-        rand_prob = np.random.uniform(0,1)
 
-        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
-        
-
-        @torch.no_grad()
-        def get_AS(z, arg):
-            orig_score = model.quantized_classifier(z)
-
-            z_pertub = []
-            for i, z_ in enumerate(z.clone()):
-                z_[sampled_idx[i] == arg[i]] = 0
-                z_pertub.append(z_.unsqueeze(0))
-
-            z_pertub = torch.cat(z_pertub, 0)
-            perturbed_score = model.quantized_classifier(z_pertub)
-
-            delta =  torch.abs(orig_score - perturbed_score)
-
-            # class specific prob difference
-            delta = torch.cat([d[y_].unsqueeze(0) for d, y_ in zip(delta, y)], 0)
-
-            rewards = torch.zeros_like(delta)
-
-            if attacker:
-                rewards[delta > EPS] = 1     
-                # rewards[delta < -EPS] =  -1
-            else:
-                # rewards[delta > EPS] = -1
-                rewards[delta < EPS] = 1
-            return rewards 
-
-        cummilative_AS = 0
-        if args.contrastive:
-            AS_scores = torch.cat([get_AS(z, w).unsqueeze(0) for i, w in enumerate(arguments.transpose(0, 1))], 0)
-            cummilative_AS = torch.sum(AS_scores, 0)
+    # update_paths
+    args.ckpt_dir = os.path.join(args.ckpt_dir, model.name)
+    args.plot_dir = os.path.join(args.plot_dir, model.name)
+    os.makedirs(args.ckpt_dir, exist_ok=True)
+    os.makedirs(args.plot_dir, exist_ok=True)
 
 
-        if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
-            reward = (pred == y).float()
-        else:
-            reward = -(pred == y).float()
+    def get_rewardZEROSUM(z, sampled_idx, arguments, claims, y, attacker=False):
+        EPS = 0.1
+        arguments = [torch.transpose(arguments[0], 0,1), 
+                        torch.transpose(arguments[1], 0,1)]
 
-        return args.reward_weightage*reward + cummilative_AS
+        nargumets = arguments[0].shape[0]
 
+        def __repeated_count__(arg):
+            arg = torch.argmax(arg, 2)
+            unique = 1.*torch.tensor([len(torch.unique(arg[:, i], dim = 0)) for i in range(arg.shape[1])]).to(arg.device)
+            return nargumets - unique     
 
-    def get_rewardZEROSUM(z, sampled_idx, arguments, logits, y, attacker=False):
-        EPS = 0.25
-        arguments = [arguments[0].trasnspose(0,1), arguments[1].trasnspose(0,1)]
-
-        z = F.adaptive_avg_pool2d(z.detach(), (1,1)).squeeze()
-        
 
         @torch.no_grad()
         def get_AS(z, arg1, arg2):
-            orig_score = model.quantized_classifier(z.unsqueeze(0))
+            orig_score = model.quantized_classifier(z)
 
-            z_pertub = []
-            for i, z_ in enumerate(z.clone()):
-                z_[sampled_idx[i] == arg1[i]] = 0
-                z_[sampled_idx[i] == arg2[i]] = 0
-                z_pertub.append(z_.unsqueeze(0))
-
-            z_pertub = torch.cat(z_pertub, 0)
-            perturbed_score = model.quantized_classifier(z_pertub.unsqueeze(0))
+            z_pertub = z.clone()
+            z_pertub *= torch.clip((arg1 + arg2), 0, 1)
+            perturbed_score = model.quantized_classifier(z_pertub)
 
             delta =  torch.abs(orig_score - perturbed_score)
 
@@ -265,36 +233,89 @@ if __name__ == '__main__':
 
         cummilative_AS = 0
         if args.contrastive:
-            AS_scores = torch.cat([get_AS(z[i], w1, w2).unsqueeze(0) for i, (w1, w2) in enumerate(zip(*arguments))], 0)
+            AS_scores = torch.cat([get_AS(z, w1, w2).unsqueeze(0) for i, (w1, w2) in enumerate(zip(*arguments))], 0)
             cummilative_AS = torch.sum(AS_scores, 0)
 
         # compute debate reward:===================
         rand_prob = np.random.uniform(0,1)
 
+        # masking z based on arguments..........
         z_pertub = z.clone()
-        z_pertub = []
-        for i, z_ in enumerate(z.clone()):
-            for i, (arg1, arg2) in enumerate(zip(*arguments)):
-                z_[sampled_idx[i] == arg1[i]] = 0
-                z_[sampled_idx[i] == arg2[i]] = 0
-            z_pertub.append(z_.unsqueeze(0))
 
-        z_pertub = torch.cat(z_pertub, 0)
-        debate_information = z - z_pertub
+        arguments_ = torch.clip(torch.sum(arguments[0], 0) + torch.sum(arguments[1], 0), 0, 1)
+        debate_information = z_pertub*arguments_ 
+
 
         with torch.no_grad():
-            pred = model.quantized_classifier(debate_information)
-            pred = torch.max(pred, dim=1)[0]
+            dpred = model.quantized_classifier(debate_information)
+            dpred = torch.argmax(dpred, dim=1)
+        
 
-        if (not attacker) or (not args.contrastive) or (rand_prob > manipulator_prob):
-            reward = (pred == y).float()
+        if not args.contrastive:
+            pred = y
         else:
-            reward = -(pred == y).float()
+            pred = dpred
 
-        return args.reward_weightage*reward + cummilative_AS
-    
-    reward_fns = [lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y),
-                    lambda z, sidx, args, p, y: get_reward(z, sidx, args, p, y, True),]
+
+        eq_idx = (claims[0] == claims[1]).float()
+        p1_idx = (pred == claims[0])
+        p2_idx = (pred == claims[1])
+
+
+        reward = torch.zeros_like(eq_idx)
+        if args.contrastive:
+            if (not attacker): # or (rand_prob > manipulator_prob):
+                reward[p1_idx] = 1
+                reward[p2_idx] = -1
+            else:
+                reward[p2_idx] = 1
+                reward[p1_idx] = -1
+            # reward *= (1 - eq_idx)
+        else:
+            if not attacker:
+                reward[p1_idx] = 1
+                # reward[p2_idx] = 1
+            else:
+                # reward[p1_idx] = 1
+                reward[p2_idx] = 1
+
+            reward *= (args.narguments + 1)
+
+
+
+
+        reward += cummilative_AS
+
+
+        # enfore uniqueness in arguments......
+
+        if args.contrastive:
+            rcount = __repeated_count__(arguments[0]) - __repeated_count__(arguments[1])
+            if not attacker:
+                reward -=rcount
+            else:
+                reward += rcount
+        else:
+            if attacker:
+                rcount = __repeated_count__(arguments[1])
+            else:
+                rcount = __repeated_count__(arguments[0])
+            reward -= rcount
+   
+
+        # binarize reward for easier training
+        # reward[reward >= 0.5*(args.narguments + 1)] = +1
+        # reward[reward < 0.5*(args.narguments + 1)]  = -1
+
+        # or normalize rewards
+        # reward = (reward - torch.min(reward))/(1e-3 + torch.max(reward) - torch.min(reward))
+        return reward, dpred
+
+        
+    # reward_fns = [lambda z, sidx, args, p, y:  (1.0*(p[0] == y), y), #get_rewardZEROSUM(z, sidx, args, p, y, False),
+    #                 lambda z, sidx, args, p, y:  (1.0*(p[1] == y), y)] #get_rewardZEROSUM(z, sidx, args, p, y, True)]
+    reward_fns = [lambda z, sidx, args, p, y:  get_rewardZEROSUM(z, sidx, args, p, y, False),
+                    lambda z, sidx, args, p, y:  get_rewardZEROSUM(z, sidx, args, p, y, True)]
     model.reward_fns = reward_fns
 
 
@@ -319,7 +340,6 @@ if __name__ == '__main__':
 
         # best model selection method is based on acc in callback.py
         # Need to fix that before changing monitor_val
-        monitor_val = 'val_0_acc' 
         trainer.train(train_loader, val_loader,
                       start_epoch=start_epoch,
                       epochs=args.epochs,
@@ -331,14 +351,24 @@ if __name__ == '__main__':
                           # TensorBoard(model, args.log_dir),
                           ModelCheckpoint(model, 
                                             args.ckpt_dir,
-                                            monitor_val),
-                          LearningRateScheduler(model, 
+                                            'val_0_acc'),
+                          LearningRateScheduler(model.quantized_optimizer, 
                                                 factor = 0.1, 
-                                                patience = 5, 
+                                                patience = 3, 
                                                 mode = 'min', 
-                                                monitor_val = monitor_val),
+                                                monitor_val = 'val_0_cqloss'),
+                          LearningRateScheduler(model.agents[0].optimizer, 
+                                                factor = 0.1, 
+                                                patience = 3, 
+                                                mode = 'min', 
+                                                monitor_val = 'val_0_loss'),
+                          LearningRateScheduler(model.agents[1].optimizer, 
+                                                factor = 0.1, 
+                                                patience = 3, 
+                                                mode = 'min', 
+                                                monitor_val = 'val_1_loss'),
                           EarlyStopping(model, 
-                                          monitor_val,
+                                          'val_0_acc',
                                           patience=args.patience)
                       ])
     elif args.is_plot:

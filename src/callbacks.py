@@ -8,6 +8,8 @@ import torch
 import shutil
 
 from src.tflogger import TFLogger
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 
 
 class Callback(object):
@@ -43,7 +45,7 @@ class PlotCbk(Callback):
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
     
-    def plot(self, imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, name):
+    def plot(self, imgs, zs, zs_idx, arguments, argument_dist, dpreds, preds, jpreds, Ys, loss, epoch, batch_ind, name):
         if ((epoch % self.plot_freq == 0) and (batch_ind == 0)) or (epoch == -1):
             if self.use_gpu:
                 imgs = imgs.detach().cpu()
@@ -53,7 +55,9 @@ class PlotCbk(Callback):
                 arguments_dist = argument_dist.detach().cpu()
                 preds = preds.cpu()
                 jpreds = jpreds.cpu()
+                dpreds = dpreds.cpu()
                 Ys = Ys.cpu()
+                loss = loss.detach().cpu()
 
 
             pickle.dump(
@@ -64,8 +68,10 @@ class PlotCbk(Callback):
                     arguments = arguments.numpy(),
                     arguments_dist = arguments_dist.numpy(),
                     preds = preds.numpy(),
+                    dpreds = dpreds.numpy(),
                     jpreds = jpreds.numpy(),
-                    Ys = Ys.numpy()    
+                    Ys = Ys.numpy(),
+                    loss = loss.numpy(),
                 ),
 
                 open(
@@ -84,8 +90,10 @@ class PlotCbk(Callback):
                 argument_dist = logs[key]['argument_dist'][:self.num_imgs]
                 preds = logs[key]['preds'][:self.num_imgs] 
                 jpreds = logs[key]['jpred'][:self.num_imgs]
+                dpreds = logs[key]['dpred'][:self.num_imgs]
                 Ys = logs[key]['y'][:self.num_imgs]
-                self.plot(imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, str(key) + '_' +name)
+                loss = logs[key]['loss']
+                self.plot(imgs, zs, zs_idx, arguments, argument_dist, dpreds, preds, jpreds, Ys, loss, epoch, batch_ind, str(key) + '_' +name)
         else:
             imgs = logs['x'][:self.num_imgs]
             zs = logs['z'][:self.num_imgs]
@@ -94,8 +102,10 @@ class PlotCbk(Callback):
             argument_dist = logs['argument_dist'][:self.num_imgs]
             preds = logs['preds'][:self.num_imgs] 
             jpreds = logs['jpred'][:self.num_imgs] 
+            dpreds = logs['dpred'][:self.num_imgs] 
             Ys = logs['y'][:self.num_imgs]
-            self.plot(imgs, zs, zs_idx, arguments, argument_dist, preds, jpreds, Ys, epoch, batch_ind, name)
+            loss = logs['loss']
+            self.plot(imgs, zs, zs_idx, arguments, argument_dist, dpreds, preds, jpreds, Ys, loss, epoch, batch_ind, name)
 
 
 class TensorBoard(Callback):
@@ -130,32 +140,41 @@ class ModelCheckpoint(Callback):
 
     def on_epoch_end(self, epoch, logs={}):
         state = {'epoch': epoch}
+        
+        for k, v in logs.items():
+            state[k] = v
 
         state.update(self.model.get_state_dict())
         torch.save(state, self.ckpt_path)
 
         if logs[self.monitor_val] > self.best_val_acc:
-            self.best_val_acc = logs[self.monitor_val]
             shutil.copyfile(self.ckpt_path, self.ckpt_path + '_best')
+            print ("Model saved: epoch: {}, acc:{}, last-max-acc: {}, path: {}".format(epoch, logs[self.monitor_val], self.best_val_acc, self.ckpt_path))
+            self.best_val_acc = logs[self.monitor_val]
 
 
 class LearningRateScheduler(Callback):
-    def __init__(self, model, factor, patience, mode, monitor_val):
+    def __init__(self, optimizer, factor, patience, mode, monitor_val,verbose=True):
         
-        
-        self.scheduler = model.lr_schedular(factor = factor,
+        self.scheduler = None
+        if not (optimizer is None):
+            self.scheduler = ReduceLROnPlateau(optimizer,
+                                            factor=factor,
                                             patience=patience,
-                                            mode = mode)
-        
+                                            mode = mode,
+                                            verbose=verbose)
+        print("LR schedular included....")
         self.monitor_val = monitor_val
+        self.best_val_loss = 1000.0
+        self.counter = 0
+
 
     def on_epoch_end(self, epoch, logs):
-        if isinstance(self.scheduler, list):
-            for ai, schedular in enumerate(self.scheduler):
-                schedular.step(logs[self.monitor_val])
-        else:
+
+        if not (self.scheduler is None):
             self.scheduler.step(logs[self.monitor_val])
 
+        
 
 class EarlyStopping(Callback):
     '''Stop training when a monitored quantity has stopped improving.

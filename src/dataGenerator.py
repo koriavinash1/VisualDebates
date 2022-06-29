@@ -99,10 +99,13 @@ class DataGenerator(data.Dataset):
                 target_transform=None,
                 patches = False,
                 npatches = 10,
+                nclasses = 10,
                 patchsize = None,
                 include_classes='all',
                 loader=default_loader):
         
+
+        print ("Including clases: ", include_classes)
         if not (include_classes == 'all'):
             include_classes = include_classes.replace(' ', '')
             include_classes = [cls_ for cls_ in include_classes.split(',')]
@@ -113,9 +116,9 @@ class DataGenerator(data.Dataset):
                                "Supported image extensions are: " + ",".join(IMG_EXTENSIONS)))
 
         self.root = root
-        self.imgs = imgs#[:500]
+        self.imgs = imgs # [:150]
         self.classes = classes
-        self.num_class = len(classes)
+        self.num_class = nclasses #len(classes)
         self.num_channels = 3
         self.class_to_idx = class_to_idx
         self.transform = transform
@@ -138,8 +141,6 @@ class DataGenerator(data.Dataset):
         
         if self.transform is not None:
             img = self.transform(img)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
 
         _, H, W = img.shape
         if self.patches:
