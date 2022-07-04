@@ -156,12 +156,23 @@ class VectorQuantizer(nn.Module):
         self.modulated_channels = args.modulated_channels
         self.temperature = args.temperature
 
-        self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
-                                       self.modulated_channels,
-                                       kernel_size=1,
-                                       stride=1,
-                                       )
-        self.norm = nn.BatchNorm2d(self.modulated_channels, affine=True)
+        # self.dis_modulator = torch.nn.Conv2d(self.nfeatures,
+        #                                self.modulated_channels,
+        #                                kernel_size=1,
+        #                                stride=1,
+        #                                )
+        # self.norm = nn.BatchNorm2d(self.modulated_channels, affine=True)
+
+        self.dis_modulator = nn.Sequential(torch.nn.Conv2d(self.nfeatures,
+                                                      self.modulated_channels,
+                                                      kernel_size=1,
+                                                      stride=1),
+                                       nn.BatchNorm2d(self.modulated_channels, affine=True),
+                                       torch.nn.Conv2d(self.modulated_channels,
+                                                          self.modulated_channels,
+                                                          kernel_size=1,
+                                                          stride=1)
+                                        )
 
         print ("USING CB MODULATOR..............")
         print ("QUANTIZING WRT:......{}".format(self.quantize))
@@ -187,25 +198,6 @@ class VectorQuantizer(nn.Module):
         self.ed = lambda x: torch.cat([torch.norm(x[i]).unsqueeze(0) for i in range(x.shape[0])], 0)
         
 
-
-
-        # remap
-        # self.remap = remap
-        # if self.remap is not None:
-        #     self.register_buffer("used", torch.tensor(np.load(self.remap)))
-        #     self.re_embed = self.used.shape[0]
-        #     self.unknown_index = unknown_index # "random" or "extra" or integer
-        #     if self.unknown_index == "extra":
-        #         self.unknown_index = self.re_embed
-        #         self.re_embed = self.re_embed+1
-
-        #     print(f"Remapping {self.n_e} indices to {self.re_embed} indices. "
-        #           f"Using {self.unknown_index} for unknown indices.")
-        # else:
-        #     self.re_embed = self.n_e
-        # self.clamp_class = Clamp()
-
-
     def HLoss(self, x):
         x = x.view(-1, self.nfeatures, x.shape[-1]).mean(-1)
         b = F.softmax(x, dim=1) * F.log_softmax(x, dim=1)
@@ -218,7 +210,6 @@ class VectorQuantizer(nn.Module):
                     return_logits=False):
         
         z = self.dis_modulator(z_)
-        # z = self.norm(z)
 
         # feature disentanglement loss
         hp = hessian_penalty(self.dis_modulator, z=z_, G_z = z)
@@ -235,27 +226,6 @@ class VectorQuantizer(nn.Module):
         z_flattened = z.view(-1, self.e_dim)
 
 
-        # intra distance (gdes-distance) between codebook vector 
-        d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
-        ed1 = torch.tensor(self.ed(self.embedding.weight))
-        ed1 = ed1.repeat(self.n_e, 1)
-        ed2 = ed1.transpose(0,1)
-        ed3 = ed1 * ed2
-        cosine_distance = d1/ed3
-
-        # numerator = torch.exp(cosine_distance / self.temperature)        
-        # denominator = torch.mean(torch.exp(cosine_distance/ self.temperature))    
-            
-        contrastive_loss = torch.mean(cosine_distance)
-        # if self.use_gpu: edx = edx.cuda()
-        # edx = torch.clamp(edx, min=-0.99999, max=0.99999)
-        # d1 = torch.acos(edx)
-        
-
-        # min_distance = torch.kthvalue(d1, 2, 0)
-        # total_min_distance = torch.mean(min_distance[0])
-        # codebookvariance = torch.mean(torch.var(d1, 1))
-
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(self.embedding.weight**2, dim=1) - 2 * \
@@ -266,9 +236,6 @@ class VectorQuantizer(nn.Module):
 
         z_q = self.embedding(min_encoding_indices).view(z.shape)
 
-        # hsw = self.hsreg(self.embedding.weight)
-        # hsw = torch.mean(torch.square(self.r - hsw))
-
         # compute loss for embedding
         if not self.legacy:
             loss = self.beta * torch.mean((z_q.detach() - z) ** 2) 
@@ -278,8 +245,18 @@ class VectorQuantizer(nn.Module):
             loss += self.beta * torch.mean((z_q - z.detach()) ** 2)
 
 
-        loss += contrastive_loss
-        loss += hp
+        if self.quantize == 'channel':
+            # intra distance (gdes-distance) between codebook vector 
+            d1 = torch.einsum('bd,dn->bn', self.embedding.weight, rearrange(self.embedding.weight, 'n d -> d n'))
+            ed1 = torch.tensor(self.ed(self.embedding.weight))
+            ed1 = ed1.repeat(self.n_e, 1)
+            ed2 = ed1.transpose(0,1)
+            ed3 = ed1 * ed2
+            cosine_distance = d1/ed3
+
+            contrastive_loss = torch.mean(cosine_distance)
+            loss += contrastive_loss
+        loss += 2*hp
 
 
         # contrastive_sum = 0
@@ -465,7 +442,7 @@ class PlayerClassifier(nn.Module):
         super(PlayerClassifier, self).__init__()
         self.fc = nn.Linear(hidden_size, output_size)
         self.fc1 = nn.Linear(input_size, output_size)
-        self.fc2 = nn.Linear(output_size, output_size)
+        # self.fc2 = nn.Linear(2*output_size, output_size)
 
     def forward(self, z, arg, h_t):
         """
@@ -482,7 +459,7 @@ class PlayerClassifier(nn.Module):
         h_t = F.relu(self.fc(h_t))
         zd = F.relu(self.fc1(z))
 
-        f = F.relu(self.fc2(h_t + zd))
+        f = F.relu(h_t + zd)
         a_t = F.log_softmax(f, dim=1)
         return a_t
 
@@ -636,7 +613,12 @@ class PlayerNet(nn.Module):
             self.cuda()
 
 
-    def step(self, z, z_idxs, y, arg1_t, arg2_t, h_t):
+    def step(self, z, 
+                    z_idxs, y, 
+                    arg_h, 
+                    arg1_t, 
+                    arg2_t, 
+                    h_t):
         """
         @param z: image. (batch, channel, height, width)
         @param arg1_t:
@@ -648,22 +630,44 @@ class PlayerNet(nn.Module):
 
 
         # distribution conditioning
-        arg1_idx = torch.argmax(arg1_t, 1); arg2_idx = torch.argmax(arg2_t, 1)
-        argument_prob_ = argument_prob.clone()
-        argument_prob_[:, arg1_idx] = 0
-        argument_prob_[:, arg2_idx] = 0
+        argument_prob_ = argument_prob.clone().detach()
+
+        arg_h = 0.999*arg_h
+        n = argument_prob.shape[1]
+        normalizer = n - torch.sum(arg_h, 1)
+        prob = torch.sum(argument_prob_*arg_h, 1)
+        update_prob = prob/normalizer
+        argument_prob_ += update_prob.unsqueeze(-1)
+        argument_prob_ -= argument_prob_*arg_h
+        argument_prob_ /= torch.sum(argument_prob_, 1).unsqueeze(-1)
+
+
+        # import pdb;pdb.set_trace()
+        # for ii in range(arg1_idx.shape[0]):
+        #     if arg1_idx[ii] == arg2_idx[ii]:
+        #         prob = argument_prob_[ii, arg1_idx[ii]]
+        #         update_prob = prob*1.0/(n-1)
+        #     else:
+        #         prob = argument_prob_[ii, arg1_idx[ii]] + argument_prob_[ii, arg2_idx[ii]]
+        #         update_prob = prob*1.0/(n-2)
+
+        #     argument_prob_[ii] += update_prob
+
+        #     argument_prob_[ii, arg1_idx[ii]] = 0
+        #     argument_prob_[ii, arg2_idx[ii]] = 0
+        
 
         # distribution poisioning
         # argument_prob_copy = argument_prob.clone().detach().cpu().numpy()
         # scale = 1 - torch.min(torch.min(argument_prob_copy - arg1_t),
         #                         torch.min(argument_prob_copy - arg2_t))
         # scale =  scale.detach().cpu().numpy()
-        # scale = 0.1
-        # noise = torch.from_numpy(np.random.normal(
-        #                     scale=scale, 
-        #                     size=argument_prob.shape))
+        # scale = 0.01
+        # noise = torch.from_numpy(np.abs(np.random.normal(
+        #                         scale=scale, 
+        #                         size=argument_prob.shape)))
         # noise = Variable(noise.float()).type_as(argument_prob).to(argument_prob.device)
-
+        # argument_prob_ += noise
 
         # # update logits with noise vectors
         # # for encouraging exploration
@@ -672,9 +676,10 @@ class PlayerNet(nn.Module):
 
 
         # argument_dist = Categorical(argument_prob)
-        argument_dist = Categorical(logits = argument_prob_)
-        arg_current = argument_dist.sample()
+        # print (torch.mean(torch.sum(argument_prob_, 1)))
+        argument_dist = Categorical(probs = argument_prob_)
 
+        arg_current = argument_dist.sample()
         # Note: log(p_y*p_x) = log(p_y) + log(p_x)
         # log_pi = torch.log(torch.clip(0.0001 + argument_prob, 0.0, 1.0))
         # log_pi = log_pi.sum(dim=1)
@@ -686,11 +691,15 @@ class PlayerNet(nn.Module):
 
         for i, _ in enumerate(z.clone()):
             if self.quantize == 'channel':
+                # for jk, v in enumerate(z_idxs[i] == z_idxs[i][arg_current[i]]):
+                #     if v: arg_current_one_hot[i, jk] = 1
+                # print (z_idxs[i], z_idxs[i][arg_current[i]], arg_current[i], argument_prob_[i])
                 arg_current_one_hot[i, z_idxs[i] == z_idxs[i][arg_current[i]]] = 1
             else:
                 arg_current_one_hot[i, arg_current[i]] = 1
 
 
+        # import pdb;pdb.set_trace()
         z_current = self.modulator_net(z, arg_current_one_hot)
         h_t = self.rnn(z_current, h_t)
         b_t = self.baseline_net(h_t[0]).squeeze()

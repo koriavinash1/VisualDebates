@@ -21,9 +21,10 @@ Penalty w.r.t. the z argument supplied to hessian_penalty:
 """
 
 import torch
+import torch.nn.functional as F
 
 
-def hessian_penalty(G, z, k=2, epsilon=0.1, reduction=torch.mean, return_separately=False, G_z=None, **G_kwargs):
+def hessian_penalty(G_, z, k=2, epsilon=0.1, reduction=torch.mean, return_separately=False, G_z=None, **G_kwargs):
     """
     Official PyTorch Hessian Penalty implementation.
     Note: If you want to regularize multiple network activations simultaneously, you need to
@@ -45,6 +46,12 @@ def hessian_penalty(G, z, k=2, epsilon=0.1, reduction=torch.mean, return_separat
                      would pass the class label into this function via y=<class_label_tensor>
     :return: A differentiable scalar (the hessian penalty), or a list of hessian penalties if return_separately is True
     """
+
+    G = lambda x: F.adaptive_avg_pool2d(G_(x), (1,1)).squeeze()
+    if not (G_z is None):
+        G_z = F.adaptive_avg_pool2d(G_z, (1,1)).squeeze()
+
+
     if G_z is None:
         G_z = G(z, **G_kwargs)
     rademacher_size = torch.Size((k, *z.size()))  # (k, N, z.size())

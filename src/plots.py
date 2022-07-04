@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import cv2, copy
 from scipy import stats
 import matplotlib.animation as animation
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, make_interp_spline
 from utils import bounding_box
 
 ## python3 plot_glimpses.py --plot_dir=./plots/ram_6_8x8_2_2/ --epoch=111  -- use this to run and save gif
@@ -30,7 +30,7 @@ def parse_arguments():
                     help='Name of the plots')
     arg.add_argument("--properties", type=bool, default=False, 
                     help='Only plot convergence and argument properties')
-    arg.add_argument("--threshold", type=float, default=0.75, 
+    arg.add_argument("--threshold", type=float, default=0.95, 
                     help='threhold value for extracting binary mask')
     return arg.parse_args()
 
@@ -67,16 +67,16 @@ def get_properties(pred, y, arguments):
    # AH calculation
     # import pdb; pdb.set_trace()
     # print (arguments[0].shape, "*******************")
-    ah_ = 0.5*(np.var(arguments[0], axis=-1) + \
-                np.var(arguments[1], axis=-1))
+    ah_ = 0.5*(stats.entropy(arguments[0], axis=-1) + stats.entropy(arguments[1], axis=-1))
+    # ah_ = 0.5*(np.var(arguments[0], axis=-1) + \
+    #             np.var(arguments[1], axis=-1))
 
+    # import pdb;pdb.set_trace()
    # AD calculation
     ad_ = np.mean((arguments[0] - arguments[1])**2, -1)**0.5
-    # print (ah_, ad_)
-    # import pdb;pdb.set_trace()
 
-    ah_ = np.mean(ah_)*10**5
-    ad_ = np.mean(ad_)*10**5
+    ah_ = np.mean(ah_)
+    ad_ = np.mean(ad_)
     # dacc
     dacc = np.sum(pred == y)*1.00/len(y)
     return zr_, ah_, ad_, dacc 
@@ -93,7 +93,6 @@ def get_arguments(x, z,
     return_arguments = [] #nargs x bs
     argument_idx = []
 
-    print ("**************************")
     # z = z/np.max(z)
     for ai in range(arguments.shape[1]):
         z_pertub = [];batch_arg = []
@@ -108,7 +107,6 @@ def get_arguments(x, z,
             else:
                 idx = np.argmax(arg_idx[i, ai])
 
-            print (i, ai, idx)
             z_ = copy.deepcopy(z[i])
             if quantize == 'channel':
                 z_[sampled_idx[i] == sampled_idx[i][idx]] = 0 
@@ -264,7 +262,7 @@ if __name__ == "__main__":
     ZR = []; AH = []; AD = []; epochs = []; accs = []; P1L = []; P2L = []
     for epoch_ in range(args.start_epoch, max_epoch):
         # try:
-        data = main_image(args, epoch_, plot=False)
+        data = main_image(args, epoch_, plot=True)
         # except:
             # exit()
         print ("epoch: ================", epoch_)
@@ -275,37 +273,42 @@ if __name__ == "__main__":
         P1L.append(np.mean(data['loss'][0]))
         P2L.append(np.mean(data['loss'][1]))
         accs.append(dacc_)
-        epochs.append(epoch_)
+        epochs.append(epoch_+1)
 
     normalize_plot = lambda x: (x - np.min(x))/(np.max(x) - np.min(x))
     # max_loss = np.max((np.max(np.abs(P1L)), np.max(np.abs(P2L))))
     # P1L = P1L/max_loss
     # P2L = P2L/max_loss
 
-    def ma(a, n=4) :
+    mn = 8
+    def ma(a, n=mn+1) :
+        a = list(a)
+        for _ in range(n-1):
+            a.append(a[-1])
+        
+        a = np.array(a)
         ret = np.cumsum(a, dtype=float)
         ret[n:] = ret[n:] - ret[:-n]
         return (ret[n - 1:] / n)
 
     ## compute ema and plotting 
-    xnew = np.linspace(0, max_epoch, num=25)
-    print (max(xnew), accs)
-    zr_cubic = interp1d(epochs[:-3], ma(ZR), kind='slinear', fill_value="extrapolate")
-    ad_cubic = interp1d(epochs[:-3], ma(AD), kind='slinear', fill_value="extrapolate")
-    ah_cubic = interp1d(epochs[:-3], ma(AH), kind='slinear', fill_value="extrapolate")
-    acc_cubic = interp1d(epochs[:-3], ma(accs), kind='slinear', fill_value="extrapolate")
-    p1l_cubic = interp1d(epochs[:-3], ma(P1L), kind='slinear', fill_value="extrapolate")
-    p2l_cubic = interp1d(epochs[:-3], ma(P2L), kind='slinear', fill_value="extrapolate")
+    xnew = np.linspace(0, max_epoch, num=100)
+    zr_cubic = interp1d(epochs, ma(ZR), kind='cubic', fill_value="extrapolate")
+    ad_cubic = interp1d(epochs, ma(AD), kind='cubic', fill_value="extrapolate")
+    ah_cubic = interp1d(epochs, ma(AH), kind='cubic', fill_value="extrapolate")
+    acc_cubic = interp1d(epochs, ma(accs), kind='cubic', fill_value="extrapolate")
+    p1l_cubic = interp1d(epochs, ma(P1L), kind='cubic', fill_value="extrapolate")
+    p2l_cubic = interp1d(epochs, ma(P2L), kind='cubic', fill_value="extrapolate")
 
 
-    
-    n = 3
+
+    n = 1
     plt.clf()
     plt.figure(figsize=(6,6))
-    # plt.plot(epochs[:-n], ma(ZR), c='b', label='$Z_R$')
-    # plt.plot(epochs[:-n], normalize_plot(ma(AH)), c='m', label ='$\mathcal{{AH}}$' )
-    # plt.plot(epochs[:-n], normalize_plot(ma(AD)), c='k', label = '$\mathcal{{AD}}$')
-    # plt.plot(epochs[:-n], ma(accs), c='g', label='Debate accuracy')
+    # plt.plot(epochs, ma(ZR), c='b', label='$Z_R$')
+    # plt.plot(epochs, normalize_plot(ma(AH)), c='m', label ='$\mathcal{{AH}}$' )
+    # plt.plot(epochs, normalize_plot(ma(AD)), c='k', label = '$\mathcal{{AD}}$')
+    # plt.plot(epochs, ma(accs), c='g', label='Debate accuracy')
     plt.plot(xnew[:-n], zr_cubic(xnew)[:-n], c='b', label='$Z_R$')
     plt.plot(xnew[:-n], normalize_plot(ah_cubic(xnew))[:-n], c='m', label ='$\mathcal{{AH}}$' )
     plt.plot(xnew[:-n], normalize_plot(ad_cubic(xnew))[:-n], c='k', label = '$\mathcal{{AD}}$')
@@ -322,4 +325,5 @@ if __name__ == "__main__":
     plt.savefig(path, bbox_inches='tight')
 
     main_image(args, max_epoch, plot=True)
+    # print (ZR, zr_cubic(xnew))
 

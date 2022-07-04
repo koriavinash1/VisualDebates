@@ -90,8 +90,9 @@ class Debate(nn.Module):
         self.quantized_classifier = QClassifier(args.modulated_channels, 
                                                     args.n_class)
 
-
         self.contrastive_loss = ContrastiveLossELI5()
+
+
         # ==============================================
         self.quantized_optimizer = None
         if self.contrastive:
@@ -119,36 +120,48 @@ class Debate(nn.Module):
         
         # init lists for location, hidden vector, baseline and log_pi
         # dimensions:    (narguments + 1, nagents, *)
-        bs_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 2)]
-        args_idx_t = [[ agent.init_argument(batch_size) for agent in self.agents ] for _ in range(self.narguments + 2)]
-        arg_dists_t = [[ None for agent in self.agents ] for _ in range(self.narguments + 2)]
-        logpis_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 2)]
+        bs_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
+        args_idx_t = [[ agent.init_argument(batch_size) for agent in self.agents ] for _ in range(self.narguments + 1)]
+        arg_dists_t = [[ None for _ in self.agents ] for _ in range(self.narguments + 1)]
+        logpis_t = [[ None for _ in range(self.nagents)] for _ in range(self.narguments + 1)]
         hs = [ agent.init_rnn_hidden(batch_size) for agent in self.agents ]
 
         # process
-        for t in range(1, self.narguments + 2):
+        argument_history = torch.zeros_like(args_idx_t[0][0])
+        for t in range(1, self.narguments + 1):
             args_idx_t_const = [_arg_.clone() for _arg_ in args_idx_t[t-1]]
             for ai, agent in enumerate(self.agents):
 
                 args_t_current = args_idx_t_const[ai]
                 args_t_opponent = args_idx_t_const[1 - ai]
-                # args_t_opponent.requires_grad = False
 
+                argument_history += args_t_current
+                argument_history += args_t_opponent
+                argument_history[argument_history > 0] = 1
+                # args_t_opponent.requires_grad = False
+                # print("*********************")
+                # import pdb;pdb.set_trace()
 
                 hs[ai], arg_idx_t, b_t, log_pi, dist = agent.forwardStep(z, 
                                                                     symbol_idxs, y,
+                                                                    argument_history,
                                                                     args_t_current, 
                                                                     args_t_opponent, 
                                                                     hs[ai])
-                args_idx_t[t-1][ai] = arg_idx_t; 
-                arg_dists_t[t][ai] = dist; 
+
+                # import pdb;pdb.set_trace()
+
+                args_idx_t[t][ai] = arg_idx_t
+                if ai == 0: 
+                    args_idx_t_const[ai] = arg_idx_t
+                arg_dists_t[t][ai] = dist;
                 logpis_t[t][ai] = log_pi
-                bs_t[t][ai] = b_t; 
+                bs_t[t][ai] = b_t
 
 
         # remove first time stamp 
-        bs_t = bs_t[1:-1]; logpis_t = logpis_t[1:-1]; 
-        args_idx_t = args_idx_t[1:-1]; arg_dists_t = arg_dists_t[1:-1]
+        bs_t = bs_t[1:]; logpis_t = logpis_t[1:]; 
+        args_idx_t = args_idx_t[1:]; arg_dists_t = arg_dists_t[1:]
 
         return args_idx_t, arg_dists_t, bs_t, logpis_t, hs
 
@@ -164,12 +177,13 @@ class Debate(nn.Module):
         agent_data = torch.cat(agents_data, dim=0)
         return torch.transpose(agent_data, 0, 1)
 
+
     def HLoss(self, x):
         """
         @param x: probability vector (probabilities of categorical disributions)
         """
         b = -1*(F.softmax(x, dim=-1) * F.log_softmax(x, dim=-1)).sum(-1)
-        b = -1*(F.softmax(b, dim=-1) * F.log_softmax(b, dim=-1)).sum(-1)
+        # b = -1*(F.softmax(b, dim=-1) * F.log_softmax(b, dim=-1)).sum(-1)
         # b = torch.max(F.softmax(x, dim=1), dim=1)[0] 
         return torch.mean(b)
 
@@ -288,12 +302,12 @@ class Debate(nn.Module):
 
             # Classifier Loss ---> distillation loss
             if self.contrastive:
-                loss_classifier = torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                     h_t[1-ai][0].clone().detach()))
+                loss_classifier = 0 # torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                    #  h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) - \
-                                    torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                            h_t[1-ai][0].clone().detach()))
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) # - \
+                                    # torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                            # h_t[1-ai][0].clone().detach()))
 
 
 
@@ -318,7 +332,7 @@ class Debate(nn.Module):
             inter_argument_distance, intra_argument_distance = self.DDistance(arg_dists_t, arguments, ai)
             
             # maximize intra argument cosine distance and entropy
-            regularization_loss = -intra_argument_entropy + intra_argument_distance
+            regularization_loss = intra_argument_entropy + intra_argument_distance
 
             if self.contrastive:
                 regularization_loss -= inter_argument_distance
@@ -446,12 +460,12 @@ class Debate(nn.Module):
 
             # classifier loss -> distillation
             if self.contrastive:
-                loss_classifier = torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                     h_t[1-ai][0].clone().detach()))
+                loss_classifier = 0 # torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                    #  h_t[1-ai][0].clone().detach()))
             else:
-                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) - \
-                                    torch.mean(F.cosine_similarity(h_t[ai][0], 
-                                            h_t[1-ai][0].clone().detach()))
+                loss_classifier = F.nll_loss(log_prob_agents[ai], jpred) # - \
+                                    # torch.mean(F.cosine_similarity(h_t[ai][0], 
+                                            # h_t[1-ai][0].clone().detach()))
 
             # Prediction Loss & Reward
             # preds:    (batch)
@@ -476,7 +490,7 @@ class Debate(nn.Module):
             inter_argument_distance, intra_argument_distance = self.DDistance(arg_dists_t, arguments, ai)
             
             # maximize intra argument entropy and minimizing cosine distance
-            regularization_loss = -intra_argument_entropy + intra_argument_distance
+            regularization_loss = intra_argument_entropy + intra_argument_distance
 
             if self.contrastive:
                 regularization_loss -= inter_argument_distance

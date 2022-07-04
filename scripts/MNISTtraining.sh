@@ -1,5 +1,6 @@
 NAME='test'
-LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsConstrastive/MNIST/'$NAME
+QUANTIZE='spatial'
+LOGSDIR='/vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/LogsContrastive2/MNIST/'$NAME
 
 
 python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
@@ -19,7 +20,8 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
-        --quantize=spatial \
+        --modulated_channels=64 \
+        --quantize=$QUANTIZE
         # --include_classes '9, 6' \
                     
 echo Support Pre-training Completed
@@ -43,7 +45,8 @@ python /vol/biomedic2/agk21/PhDLogs/codes/AIDebatesOnSymbols/main.py \
         --rnn_hidden=$2 \
         --rnn_input_size=$3 \
         --nconcepts=$4 \
-        --quantize=spatial \
+        --modulated_channels=64 \
+        --quantize=$QUANTIZE
         # --include_classes '9, 6' \
 
                     
