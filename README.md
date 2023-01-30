@@ -1,7 +1,4 @@
 # Visual Debates
-[![Build Status](https://travis-ci.org/koriavinash1/BioExp.svg?branch=master)](https://travis-ci.org/koriavinash1/BioExp)
-[![Documentation Status](https://readthedocs.org/projects/bioexp/badge/?version=latest)](https://bioexp.readthedocs.io/en/latest/?badge=latest)
-[![Downloads](https://pepy.tech/badge/visualdebates)](https://pepy.tech/project/visualdebates)
 [![arXiv](https://img.shields.io/badge/arXiv-2008.06457-<COLOR>.svg)](https://arxiv.org/abs/2210.09015)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
